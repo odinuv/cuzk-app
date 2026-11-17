@@ -155,9 +155,12 @@ impl Meter<'_> {
     }
 }
 
-/// Everything recorded for one item; written in the final transaction.
+/// Everything recorded for one item; written in the final transaction, and only if the
+/// item still exists with the identification it had when it was checked.
 struct Outcome {
     item_id: i64,
+    /// `item_key` of the item as checked (set by `execute`).
+    item_key: String,
     status: ItemStatus,
     changes_json: Option<String>,
     error: Option<String>,
@@ -172,6 +175,7 @@ impl Outcome {
     fn new(item_id: i64, status: ItemStatus) -> Self {
         Self {
             item_id,
+            item_key: String::new(),
             status,
             changes_json: None,
             error: None,
@@ -527,7 +531,7 @@ fn execute(
         if !out_of_budget && meter.remaining() < MAX_CALLS_PER_ITEM {
             out_of_budget = true;
         }
-        let o = if out_of_budget || (cis_deferred && need_cis.contains(&id)) {
+        let mut o = if out_of_budget || (cis_deferred && need_cis.contains(&id)) {
             Outcome::new(id, ItemStatus::Deferred)
         } else if let (true, Some(msg)) = (need_cis.contains(&id), &cis_error) {
             Outcome::error(id, msg.clone())
@@ -537,37 +541,26 @@ fn execute(
             out_of_budget |= o.status == ItemStatus::Deferred;
             o
         };
-        match o.status {
-            ItemStatus::First | ItemStatus::Unchanged => summary.checked += 1,
-            ItemStatus::Changed => {
-                summary.checked += 1;
-                summary.changed += 1;
-            }
-            ItemStatus::Error => summary.errors += 1,
-            ItemStatus::Deferred => summary.deferred += 1,
-        }
-        summary.plomby_nove += o.plomby_nove;
+        o.item_key = item_key(&row.item.ident);
         outcomes.push(o);
     }
 
-    summary.status = if summary.deferred > 0 {
-        RunStatus::Partial
-    } else {
-        RunStatus::Ok
-    };
     summary.api_calls = meter.used();
     summary.api_used_today = stav.provedeno_volani.saturating_add(summary.api_calls);
     summary.api_limit = stav.limit_volani;
     summary.aktualnost_dat = aktualnost;
 
-    let rec = record(
-        &summary,
-        now,
-        Some(summary.api_used_today),
-        Some(summary.api_limit),
-    );
     db.transaction(|db| {
-        for o in &outcomes {
+        // The UI may have deleted an item or changed its identification while it was being
+        // checked: such outcomes are dropped (the new identity gets its own first check).
+        let mut kept = Vec::with_capacity(outcomes.len());
+        for o in outcomes {
+            if db.item_key_is(o.item_id, &o.item_key)? {
+                kept.push(o);
+            }
+        }
+        tally(&mut summary, &kept);
+        for o in &kept {
             db.insert_item_result(
                 run_id,
                 o.item_id,
@@ -582,9 +575,35 @@ fn execute(
                 db.set_resolve_error(o.item_id, err.clone())?;
             }
         }
-        db.finish_run(&rec)
+        db.finish_run(&record(
+            &summary,
+            now,
+            Some(summary.api_used_today),
+            Some(summary.api_limit),
+        ))
     })?;
     Ok(summary)
+}
+
+/// Item counts, new plomby and run status from the outcomes that are recorded.
+fn tally(summary: &mut RunSummary, outcomes: &[Outcome]) {
+    for o in outcomes {
+        match o.status {
+            ItemStatus::First | ItemStatus::Unchanged => summary.checked += 1,
+            ItemStatus::Changed => {
+                summary.checked += 1;
+                summary.changed += 1;
+            }
+            ItemStatus::Error => summary.errors += 1,
+            ItemStatus::Deferred => summary.deferred += 1,
+        }
+        summary.plomby_nove += o.plomby_nove;
+    }
+    summary.status = if summary.deferred > 0 {
+        RunStatus::Partial
+    } else {
+        RunStatus::Ok
+    };
 }
 
 fn record(

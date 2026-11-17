@@ -309,6 +309,17 @@ impl Db {
         .collect()
     }
 
+    /// Whether item `id` exists and is still identified by `key`.
+    pub fn item_key_is(&self, id: i64, key: &str) -> Result<bool> {
+        self.0
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM items WHERE id = ?1 AND item_key = ?2)",
+                params![id, key],
+                |r| r.get(0),
+            )
+            .map_err(db_err)
+    }
+
     pub fn set_item_success(&self, id: i64, data_json: &str, at: DateTime<Utc>) -> Result<()> {
         self.0
             .execute(

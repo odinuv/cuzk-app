@@ -1,8 +1,8 @@
 use chrono::{DateTime, Duration as Dur, TimeZone, Utc};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use strazce_core::api::{ApiClient, MockTransport};
+use strazce_core::api::{ApiClient, MockTransport, Transport};
 use strazce_core::db::{Db, ItemRow, NewItem};
 use strazce_core::error::CoreError;
 use strazce_core::lock::RunLock;
@@ -715,4 +715,164 @@ fn invalid_key_aborts_run_without_touching_items() {
     assert_eq!(run.status, "failed");
     assert!(run.error.is_some());
     assert_eq!(e.item(a).last_success_at, ra.last_success_at);
+}
+
+/// Runs a closure once, just before the first request whose URL contains `trigger`, to
+/// simulate the UI editing the database while a check is running.
+struct HookTransport {
+    inner: Arc<MockTransport>,
+    hook: Mutex<Option<(String, Hook)>>,
+}
+
+type Hook = Box<dyn FnOnce() + Send>;
+
+impl Transport for HookTransport {
+    fn get(&self, url: &str, api_key: &str) -> Result<(u16, String), CoreError> {
+        let fire = {
+            let mut h = self.hook.lock().unwrap();
+            if h.as_ref().is_some_and(|(t, _)| url.contains(t.as_str())) {
+                h.take().map(|(_, f)| f)
+            } else {
+                None
+            }
+        };
+        if let Some(f) = fire {
+            f();
+        }
+        self.inner.get(url, api_key)
+    }
+}
+
+struct FileEnv {
+    mock: Arc<MockTransport>,
+    hook: Arc<HookTransport>,
+    client: ApiClient,
+    db: Db,
+    db_path: PathBuf,
+    lock: PathBuf,
+    _dir: TempDir,
+}
+
+fn file_setup() -> FileEnv {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("strazce.db");
+    let mock = Arc::new(MockTransport::new());
+    let hook = Arc::new(HookTransport {
+        inner: mock.clone(),
+        hook: Mutex::new(None),
+    });
+    let client = ApiClient::new(hook.clone(), "fake-key".into()).with_retry_delay(Duration::ZERO);
+    FileEnv {
+        mock,
+        hook,
+        client,
+        db: Db::open(&db_path).unwrap(),
+        lock: dir.path().join("strazce.lock"),
+        db_path,
+        _dir: dir,
+    }
+}
+
+impl FileEnv {
+    fn stav(&self) {
+        self.mock.push(
+            "/AplikacniSluzby/StavUctu",
+            200,
+            r#"{"idSluzby":1,"aktualniObdobi":"2026-11-17","provedenoVolani":0,"limitVolani":500,"expiraceApiKey":null}"#,
+        );
+    }
+
+    /// Runs `f` on a second connection (like the UI) right before a request to `trigger`.
+    fn on_request(&self, trigger: &str, f: impl FnOnce(&Db) + Send + 'static) {
+        let path = self.db_path.clone();
+        *self.hook.hook.lock().unwrap() = Some((
+            trigger.to_string(),
+            Box::new(move || f(&Db::open(&path).unwrap())),
+        ));
+    }
+
+    fn run(&mut self, now: DateTime<Utc>) -> Result<strazce_core::run::RunSummary, CoreError> {
+        run_check(&self.client, &mut self.db, &self.lock, Trigger::Manual, now)
+    }
+
+    fn item(&self, id: i64) -> Option<ItemRow> {
+        self.db
+            .list_items()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.item.id == id)
+    }
+}
+
+#[test]
+fn identity_change_during_run_is_not_overwritten() {
+    let mut e = file_setup();
+    let a = add(&e.db, parcela(1));
+    e.stav();
+    vyhledani(&e.mock, 101);
+    get_parcela(&e.mock, 101, 500, &[]);
+    e.run(now()).unwrap();
+
+    // While the old object is being fetched, the user changes the item to another parcel.
+    let later = now() + Dur::days(15);
+    e.stav();
+    e.on_request("/Parcely/101", move |db| {
+        db.update_item(&Item {
+            id: a,
+            popis: "jiná".into(),
+            enabled: true,
+            ident: parcela(99),
+        })
+        .unwrap();
+        db.set_resolve_error(a, Some("chyba z UI".into())).unwrap();
+    });
+    get_parcela(&e.mock, 101, 450, &[]);
+    let s = e.run(later).unwrap();
+
+    assert_eq!(s.status, RunStatus::Ok);
+    assert!(e.db.item_results_for_run(s.run_id).unwrap().is_empty());
+    let row = e.item(a).unwrap();
+    assert_eq!(
+        row.last_data, None,
+        "old object's snapshot written onto the new identity"
+    );
+    assert_eq!(row.last_success_at, None);
+    assert_eq!(row.resolve_error.as_deref(), Some("chyba z UI"));
+    assert!(e.db.unseen_findings().unwrap().is_empty());
+}
+
+#[test]
+fn item_deleted_during_run_does_not_fail_the_run() {
+    let mut e = file_setup();
+    let a = add(&e.db, parcela(1));
+    let b = add(&e.db, parcela(2));
+    e.stav();
+    vyhledani(&e.mock, 101);
+    get_parcela(&e.mock, 101, 500, &[]);
+    vyhledani(&e.mock, 102);
+    get_parcela(&e.mock, 102, 300, &[]);
+    e.run(now()).unwrap();
+
+    let later = now() + Dur::days(15);
+    e.stav();
+    e.on_request("/Parcely/101", move |db| db.delete_item(a).unwrap());
+    get_parcela(&e.mock, 101, 450, &[]);
+    get_parcela(&e.mock, 102, 300, &[]);
+    let s = e
+        .run(later)
+        .expect("a deleted item must not fail the whole run");
+
+    assert_eq!(s.status, RunStatus::Ok);
+    assert_eq!((s.checked, s.changed), (1, 0));
+    let res = e.db.item_results_for_run(s.run_id).unwrap();
+    assert_eq!(
+        res.iter()
+            .map(|r| (r.item_id, r.status.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(b, "unchanged")]
+    );
+    assert!(e.item(a).is_none());
+    assert_eq!(e.item(b).unwrap().last_success_at, Some(later));
+    let run = &e.db.recent_runs(1).unwrap()[0];
+    assert_eq!((run.status.as_str(), run.checked), ("ok", 1));
 }
