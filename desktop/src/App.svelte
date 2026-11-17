@@ -10,6 +10,7 @@
   import Items from "./screens/Items.svelte";
   import Results from "./screens/Results.svelte";
   import Settings from "./screens/Settings.svelte";
+  import ItemDetail from "./screens/ItemDetail.svelte";
 
   type Tab = "items" | "results" | "settings";
 
@@ -22,6 +23,8 @@
   let checking = $state(false);
   let checkMsg = $state<{ text: string; error: boolean } | null>(null);
   let loadError = $state<string | null>(null);
+  let statusError = $state<string | null>(null);
+  let detailId = $state<number | null>(null);
 
   const unseen = $derived(res?.findings.length ?? 0);
 
@@ -39,8 +42,10 @@
   async function refreshRemote() {
     try {
       status = await apiStatus();
+      statusError = null;
     } catch (err) {
-      loadError = String(err);
+      status = null;
+      statusError = String(err);
     }
     statusLoaded = true;
     if (status?.hasKey) {
@@ -94,6 +99,11 @@
 
 {#if !statusLoaded}
   <p class="center muted">Načítám…</p>
+{:else if statusError}
+  <div class="center">
+    <p class="error">{statusError}</p>
+    <button class="primary" onclick={refreshRemote}>Zkusit znovu</button>
+  </div>
 {:else if !status?.hasKey}
   <Onboarding ondone={keyChanged} />
 {:else}
@@ -118,13 +128,14 @@
     {#if checkMsg}<p class:error={checkMsg.error} class="msg">{checkMsg.text}</p>{/if}
     {#if loadError}<p class="error">{loadError}</p>{/if}
     {#if tab === "items"}
-      <Items {items} onchanged={refreshLocal} />
+      <Items {items} onchanged={refreshLocal} ondetail={(id) => (detailId = id)} />
     {:else if tab === "results"}
-      <Results data={res} onchanged={refreshLocal} />
+      <Results data={res} onchanged={refreshLocal} ondetail={(id) => (detailId = id)} />
     {:else if status}
       <Settings {status} onstatus={keyChanged} />
     {/if}
   </main>
+  {#if detailId !== null}<ItemDetail id={detailId} onclose={() => (detailId = null)} />{/if}
 {/if}
 
 <style>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatChange, formatDate, formatDue, formatRizeni, formatRunSummary, formatValue, statusLabel } from "./format";
+import { formatChange, formatDate, detailRows, formatDue, formatRizeni, formatRunSummary, formatValue, statusLabel } from "./format";
 
 describe("formatChange", () => {
   it("renders path: before → after", () => {
@@ -79,5 +79,23 @@ describe("formatRunSummary", () => {
   });
   it("shows the error of a failed run", () => {
     expect(formatRunSummary({ ...base, status: "failed", error: "Kontrola už běží." })).toBe("Kontrola už běží.");
+  });
+});
+
+describe("detailRows", () => {
+  it("flattens nested objects and arrays with depth", () => {
+    expect(detailRows({ a: 1, b: { c: "x", d: null }, e: [{ f: true }], g: [] })).toEqual([
+      { depth: 0, key: "a", value: "1" },
+      { depth: 0, key: "b", value: null },
+      { depth: 1, key: "c", value: "x" },
+      { depth: 1, key: "d", value: "—" },
+      { depth: 0, key: "e", value: null },
+      { depth: 1, key: "[1]", value: null },
+      { depth: 2, key: "f", value: "ano" },
+      { depth: 0, key: "g", value: "—" },
+    ]);
+  });
+  it("returns no rows for a scalar", () => {
+    expect(detailRows(5)).toEqual([]);
   });
 });

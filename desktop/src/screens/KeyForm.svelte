@@ -28,7 +28,7 @@
 </script>
 
 <form onsubmit={submit} class="row">
-  <input type="password" bind:value={key} placeholder="API klíč ČÚZK" autocomplete="off" style="flex: 1; min-width: 220px" />
+  <input type="password" bind:value={key} aria-label="API klíč ČÚZK" placeholder="API klíč ČÚZK" autocomplete="off" style="flex: 1; min-width: 220px" />
   <button class="primary" type="submit" disabled={busy}>{busy ? "Ověřuji…" : label}</button>
 </form>
 {#if error}<p class="error">{error}</p>{/if}

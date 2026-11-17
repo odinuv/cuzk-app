@@ -135,6 +135,8 @@ export interface FindingView {
   describe: string;
   status: ItemStatus;
   changes: Changes | null;
+  /** Czech error text of a failed item. */
+  error: string | null;
   runFinishedAt: string | null;
 }
 
@@ -156,7 +158,10 @@ export interface RunView {
 }
 
 export interface ResultsView {
+  /** Unseen findings. */
   findings: FindingView[];
+  /** Per-item results of the last run (all statuses). */
+  lastRunItems: FindingView[];
   lastRun: RunView | null;
   runs: RunView[];
 }

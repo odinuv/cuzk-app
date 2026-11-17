@@ -76,3 +76,30 @@ export function formatRunSummary(s: RunSummary): string {
   if (s.deferred > 0) parts.push(`odloženo na další den ${s.deferred}`);
   return parts.join(" · ");
 }
+
+export interface DetailRow {
+  depth: number;
+  key: string;
+  /** null for a container (object/array) header row. */
+  value: string | null;
+}
+
+/** Flattens JSON into indented key/value rows for a readable nested view. */
+export function detailRows(v: unknown, depth = 0): DetailRow[] {
+  const rows: DetailRow[] = [];
+  const entries: [string, unknown][] = Array.isArray(v)
+    ? v.map((x, i) => [`[${i + 1}]`, x])
+    : v !== null && typeof v === "object"
+      ? Object.entries(v as Record<string, unknown>)
+      : [];
+  for (const [key, val] of entries) {
+    const isContainer = val !== null && typeof val === "object" && Object.keys(val).length > 0;
+    if (isContainer) {
+      rows.push({ depth, key, value: null });
+      rows.push(...detailRows(val, depth + 1));
+    } else {
+      rows.push({ depth, key, value: formatValue(val) });
+    }
+  }
+  return rows;
+}

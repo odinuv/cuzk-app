@@ -3,7 +3,11 @@
   import { formatDate } from "../lib/format";
   import ItemForm from "./ItemForm.svelte";
 
-  let { items, onchanged }: { items: ItemView[]; onchanged: () => void } = $props();
+  let { items, onchanged, ondetail }: {
+    items: ItemView[];
+    onchanged: () => void;
+    ondetail: (id: number) => void;
+  } = $props();
 
   let editing = $state<ItemView | "new" | null>(null);
   let confirmId = $state<number | null>(null);
@@ -61,6 +65,7 @@
         <button class="danger" onclick={() => remove(it)}>Ano, smazat</button>
         <button onclick={() => (confirmId = null)}>Ne</button>
       {:else}
+        <button onclick={() => ondetail(it.id)}>Detail</button>
         <button onclick={() => (editing = it)}>Upravit</button>
         <button onclick={() => (confirmId = it.id)}>Smazat</button>
       {/if}

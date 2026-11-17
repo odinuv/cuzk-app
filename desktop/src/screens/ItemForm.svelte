@@ -20,10 +20,11 @@
   let editingId = $state<number | undefined>(initial?.id);
   let resolveError = $state<string | null>(initial?.resolveError ?? null);
 
-  let kuText = $state(initial ? `k.ú. ${identToForm(initial.ident).ku}` : "");
+  let kuText = $state(initial ? initial.describe : "");
   let kuOptions = $state<KuOption[]>([]);
   let kuOpen = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let seq = 0; // guards against out-of-order searchKu responses
 
   let casti = $state<CastObceOption[]>([]);
   let busy = $state(false);
@@ -38,23 +39,29 @@
   function onKuInput() {
     f.ku = null;
     kuOpen = true;
+    seq++;
     clearTimeout(timer);
     const q = kuText.trim();
     if (q.length < 2) {
       kuOptions = [];
       return;
     }
+    const mine = ++seq;
     timer = setTimeout(async () => {
       try {
-        kuOptions = await searchKu(q);
+        const found = await searchKu(q);
+        if (mine === seq) kuOptions = found;
       } catch (err) {
-        kuOptions = [];
-        error = String(err);
+        if (mine === seq) {
+          kuOptions = [];
+          error = String(err);
+        }
       }
     }, 250);
   }
 
   function pickKu(o: KuOption) {
+    seq++;
     f.ku = o.kod;
     kuText = `${o.nazev} (${o.obec})`;
     kuOptions = [];
@@ -122,6 +129,8 @@
         bind:value={kuText}
         oninput={onKuInput}
         onfocus={() => (kuOpen = true)}
+        onkeydown={(e) => e.key === "Escape" && (kuOpen = false)}
+        onblur={() => setTimeout(() => (kuOpen = false), 150)}
         placeholder="začněte psát název, např. Ponava"
         autocomplete="off"
       />
