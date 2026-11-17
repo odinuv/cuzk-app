@@ -801,6 +801,17 @@ impl Db {
             .map_err(db_err)
     }
 
+    /// Deletes every setting whose key starts with `prefix`, except `keep`.
+    pub fn delete_settings_with_prefix_except(&self, prefix: &str, keep: &str) -> Result<()> {
+        self.0
+            .execute(
+                "DELETE FROM settings WHERE substr(key, 1, length(?1)) = ?1 AND key <> ?2",
+                params![prefix, keep],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         self.0
             .execute(

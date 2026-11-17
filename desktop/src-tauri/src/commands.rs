@@ -7,7 +7,7 @@
 //! PascalCase enum tags. Run status strings are lowercase (`ok`, `partial`, `failed`,
 //! `running`); `ItemStatus` uses its default PascalCase representation (`Changed`, ...).
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -36,6 +36,16 @@ const KU_SEARCH_LIMIT: u32 = 20;
 const RUNS_LIMIT: u32 = 30;
 const MSG_NO_KEY: &str = "Chybí API klíč.";
 const MSG_RUNNING: &str = "Kontrola už běží.";
+const MSG_UI_BUDGET: &str =
+    "Dnešní limit API je vyčerpán – položka se dohledá při příští kontrole.";
+const MSG_UI_BUDGET_KU: &str =
+    "Dnešní limit API je vyčerpán – číselník katastrálních území se stáhne při příští kontrole nebo zítra.";
+/// Settings key prefix of the per-day counter of API calls made from the UI.
+const UI_CALLS_PREFIX: &str = "ui_api_calls_";
+/// Calls the UI leaves free for the checks when it decides whether to call the API.
+const UI_RESERVE: i64 = 10;
+/// Assumed daily limit while no run of today has reported the real one.
+const DEFAULT_DAILY_LIMIT: i64 = 500;
 
 pub struct AppState {
     pub db: Mutex<Db>,
@@ -332,6 +342,61 @@ fn remaining_from(s: &StavUctu) -> u32 {
     left.max(0) as u32
 }
 
+// ---- UI-side API budget ----
+
+fn local_today() -> NaiveDate {
+    Local::now().date_naive()
+}
+
+/// Settings key of the UI call counter for `day` (local date).
+fn ui_calls_key(day: NaiveDate) -> String {
+    format!("{UI_CALLS_PREFIX}{}", day.format("%Y-%m-%d"))
+}
+
+fn ui_calls(db: &Db, day: NaiveDate) -> Result<u32, String> {
+    Ok(db
+        .get_setting(&ui_calls_key(day))
+        .map_err(msg)?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0))
+}
+
+/// Adds the calls a UI command just made (`client.calls()`) to today's counter and drops
+/// the counters of earlier days.
+fn add_ui_calls(db: &Db, calls: u32) -> Result<(), String> {
+    if calls == 0 {
+        return Ok(());
+    }
+    let day = local_today();
+    let key = ui_calls_key(day);
+    let total = ui_calls(db, day)?.saturating_add(calls);
+    db.set_setting(&key, &total.to_string()).map_err(msg)?;
+    db.delete_settings_with_prefix_except(UI_CALLS_PREFIX, &key)
+        .map_err(msg)
+}
+
+/// Whether the UI may still make an optional API call (resolve, číselníky) today: the usage
+/// last reported by today's run plus the UI calls counted today, plus a reserve of 10,
+/// must stay below the limit (500 when no run of today reported it).
+fn ui_budget_ok(db: &Db) -> Result<bool, String> {
+    let today = local_today();
+    let run = db
+        .recent_runs(RUNS_LIMIT)
+        .map_err(msg)?
+        .into_iter()
+        .find(|r| {
+            r.api_used_today.is_some() && r.started_at.with_timezone(&Local).date_naive() == today
+        });
+    let (used, limit) = match run {
+        Some(r) => (
+            i64::from(r.api_used_today.unwrap_or(0)),
+            r.api_limit.map_or(DEFAULT_DAILY_LIMIT, i64::from),
+        ),
+        None => (0, DEFAULT_DAILY_LIMIT),
+    };
+    Ok(used + i64::from(ui_calls(db, today)?) + UI_RESERVE < limit)
+}
+
 // ---- API key and account ----
 
 /// Costs one API call (`StavUctu`) when a key is stored. An account-call failure is
@@ -356,11 +421,13 @@ pub fn api_status(st: &AppState) -> Result<ApiStatus, String> {
         }
         Err(e) => out.error = Some(msg(e)),
     }
+    add_ui_calls(&lock_db(st), c.calls())?;
     Ok(out)
 }
 
-/// Validates the key with `StavUctu`, stores it, then refreshes the číselníky.
-/// A číselník failure does not fail the command (`search_ku` retries lazily).
+/// Validates the key with `StavUctu`, stores it, then refreshes the číselníky when today's
+/// API budget allows. A číselník failure does not fail the command (`search_ku` and the
+/// check retry lazily).
 pub fn set_api_key(st: &AppState, key: String) -> Result<ApiStatus, String> {
     let key = key.trim().to_string();
     if key.is_empty() {
@@ -372,7 +439,15 @@ pub fn set_api_key(st: &AppState, key: String) -> Result<ApiStatus, String> {
         other => msg(other),
     })?;
     st.secrets.set(&key).map_err(msg)?;
-    let _ = ensure_ciselniky(&c, &lock_db(st), Utc::now());
+    {
+        let db = lock_db(st);
+        add_ui_calls(&db, c.calls())?;
+        if ui_budget_ok(&db)? {
+            let before = c.calls();
+            let _ = ensure_ciselniky(&c, &db, Utc::now());
+            add_ui_calls(&db, c.calls() - before)?;
+        }
+    }
     Ok(ApiStatus {
         has_key: true,
         limit: Some(s.limit_volani),
@@ -397,8 +472,9 @@ pub fn list_items(st: &AppState) -> Result<Vec<ItemView>, String> {
         .collect())
 }
 
-/// Inserts or updates, then resolves right away. A resolve failure is stored in
-/// `resolve_error` and returned inside the view, not as a command error.
+/// Inserts or updates, then resolves right away when today's API budget allows (otherwise
+/// the next check resolves it). A resolve failure is stored in `resolve_error` and
+/// returned inside the view, not as a command error.
 pub fn save_item(st: &AppState, input: ItemInput) -> Result<ItemView, String> {
     validate(&input.ident)?;
     let popis = input.popis.trim().to_string();
@@ -424,6 +500,11 @@ pub fn save_item(st: &AppState, input: ItemInput) -> Result<ItemView, String> {
     };
     // Without a key there is nothing to resolve against; the item is simply saved.
     if let Some(key) = stored_key(st)? {
+        if !ui_budget_ok(&db)? {
+            db.set_resolve_error(id, Some(MSG_UI_BUDGET.to_string()))
+                .map_err(msg)?;
+            return Ok(item_view(&find_item(&db, id)?));
+        }
         let c = ApiClient::new(st.transport.clone(), key);
         let row = find_item(&db, id)?;
         let needs_ciselniky = matches!(
@@ -438,6 +519,7 @@ pub fn save_item(st: &AppState, input: ItemInput) -> Result<ItemView, String> {
         } else {
             resolve(&c, &db, &row)
         };
+        add_ui_calls(&db, c.calls())?;
         db.set_resolve_error(id, resolved.err().map(msg))
             .map_err(msg)?;
     }
@@ -457,7 +539,12 @@ pub fn search_ku(st: &AppState, q: String) -> Result<Vec<KuOption>, String> {
     let db = lock_db(st);
     if db.ciselnik_age("ku").map_err(msg)?.is_none() {
         if let Ok(c) = client(st) {
-            ensure_ciselniky(&c, &db, Utc::now()).map_err(msg)?;
+            if !ui_budget_ok(&db)? {
+                return Err(MSG_UI_BUDGET_KU.to_string());
+            }
+            let r = ensure_ciselniky(&c, &db, Utc::now());
+            add_ui_calls(&db, c.calls())?;
+            r.map_err(msg)?;
         }
     }
     db.search_ku(q, KU_SEARCH_LIMIT).map_err(msg)
@@ -591,10 +678,14 @@ pub fn due_overview(st: &AppState) -> Result<DueOverview, String> {
             .collect();
         (due.len() as u32, costs)
     };
-    let remaining = client(st)
-        .ok()
-        .and_then(|c| c.stav_uctu().ok())
-        .map(|s| remaining_from(&s));
+    let remaining = match client(st) {
+        Ok(c) => {
+            let s = c.stav_uctu().ok();
+            add_ui_calls(&lock_db(st), c.calls())?;
+            s.map(|s| remaining_from(&s))
+        }
+        Err(_) => None,
+    };
     let waiting = match remaining {
         None => 0,
         Some(mut left) => costs
@@ -1049,5 +1140,77 @@ mod tests {
         let s = run_check(&t.st).unwrap();
         assert_eq!((s.checked, s.errors, s.deferred), (0, 0, 0));
         assert_eq!(s.next_due, Some(checked_at + chrono::Duration::days(14)));
+    }
+
+    fn ui_calls(t: &T) -> Option<String> {
+        lock_db(&t.st)
+            .get_setting(&ui_calls_key(local_today()))
+            .unwrap()
+    }
+
+    #[test]
+    fn ui_api_calls_are_counted_per_day() {
+        let t = setup(true);
+        t.mock
+            .push("/Parcely/Vyhledani", 200, r#"{"data":[{"id":101}]}"#);
+        save_item(&t.st, parcela_input()).unwrap();
+        assert_eq!(ui_calls(&t).as_deref(), Some("1"));
+        t.mock.push(
+            "/AplikacniSluzby/StavUctu",
+            200,
+            r#"{"idSluzby":1,"aktualniObdobi":"2026-11-17","provedenoVolani":10,"limitVolani":500,"expiraceApiKey":null}"#,
+        );
+        api_status(&t.st).unwrap();
+        assert_eq!(ui_calls(&t).as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn save_item_skips_resolve_when_todays_budget_is_used_up() {
+        let t = setup(true);
+        {
+            // Today's run reported 486/500 used; the UI has made 4 more calls since.
+            let db = lock_db(&t.st);
+            let run = db.begin_run("scheduled", Utc::now()).unwrap();
+            db.finish_run(&strazce_core::db::RunRecord {
+                id: run,
+                finished_at: Utc::now(),
+                status: "ok".into(),
+                checked: 1,
+                changed: 0,
+                errors: 0,
+                deferred: 0,
+                api_calls: 3,
+                api_used_today: Some(486),
+                api_limit: Some(500),
+                aktualnost_dat: None,
+                error: None,
+            })
+            .unwrap();
+            db.set_setting(&ui_calls_key(local_today()), "4").unwrap();
+        }
+        // No response queued: any API call would panic.
+        let v = save_item(&t.st, parcela_input()).expect("the item is still saved");
+        assert_eq!(v.resolve_error.as_deref(), Some(MSG_UI_BUDGET));
+        assert_eq!(list_items(&t.st).unwrap().len(), 1);
+        assert!(t.mock.requested_urls().is_empty());
+    }
+
+    #[test]
+    fn set_api_key_skips_ciselniky_and_search_ku_skips_download_without_budget() {
+        let t = setup(false);
+        lock_db(&t.st)
+            .set_setting(&ui_calls_key(local_today()), "495")
+            .unwrap();
+        t.mock.push(
+            "/AplikacniSluzby/StavUctu",
+            200,
+            r#"{"idSluzby":1,"aktualniObdobi":"2026-11-17","provedenoVolani":10,"limitVolani":500,"expiraceApiKey":null}"#,
+        );
+        set_api_key(&t.st, "good-key".into()).unwrap();
+        assert_eq!(t.mock.requested_urls().len(), 1, "only StavUctu");
+        assert_eq!(ui_calls(&t).as_deref(), Some("496"));
+        let err = search_ku(&t.st, "Pona".into()).unwrap_err();
+        assert!(err.contains("limit"), "{err}");
+        assert_eq!(t.mock.requested_urls().len(), 1);
     }
 }

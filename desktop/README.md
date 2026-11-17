@@ -7,7 +7,7 @@ Windows aplikace, která hlídá vybrané nemovitosti (parcely, stavby, jednotky
 ### Co aplikace dělá
 - Sleduje vámi zadané parcely, stavby a jednotky. Při každé kontrole porovná aktuální data s posledním uloženým stavem a ukáže, co se změnilo.
 - Plomby (nově zapsaná nebo zaniklá řízení) jsou ve výsledcích zvýrazněné nahoře.
-- Položky se kontrolují postupně, každá nejvýše jednou za zvolený interval (7, 14 nebo 30 dní, výchozí 14). Denní limit API se nikdy nepřekročí: co se do limitu nevejde, počká na další den.
+- Položky se kontrolují postupně, každá nejvýše jednou za zvolený interval (7, 14 nebo 30 dní, výchozí 14). Aplikace si drží rezervu a denní limit API hlídá: co se do limitu nevejde, počká na další den. Dohledání nové položky nebo stažení číselníků z aplikace se při téměř vyčerpaném limitu odloží na příští kontrolu.
 - Výsledky jsou jen v aplikaci, u plánované kontroly navíc přijde systémová notifikace se shrnutím.
 
 ### API klíč ČÚZK
