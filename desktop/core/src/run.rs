@@ -206,6 +206,16 @@ fn truncate(s: String) -> String {
     }
 }
 
+/// Stored error text. An HTTP error keeps only its status: response bodies can be long or
+/// HTML. Status 200 marks an invalid response, whose text is our own description.
+fn error_text(e: &CoreError) -> String {
+    match e {
+        CoreError::Http { status: 200, body } => truncate(body.clone()),
+        CoreError::Http { status, .. } => format!("HTTP chyba {status}"),
+        other => truncate(other.to_string()),
+    }
+}
+
 fn invalid_response(what: &str) -> CoreError {
     CoreError::Http {
         status: 200,
@@ -343,7 +353,7 @@ fn check_item(
             return Ok(o);
         }
         Err(e) => {
-            let mut o = Outcome::error(id, truncate(e.to_string()));
+            let mut o = Outcome::error(id, error_text(&e));
             if resolved_ok {
                 o.resolve_error = Some(None);
             }
@@ -357,7 +367,7 @@ fn check_item(
     let new_plomby = match plomby_of(&data) {
         Ok(p) => p,
         Err(e) => {
-            let mut o = Outcome::error(id, truncate(e.to_string()));
+            let mut o = Outcome::error(id, error_text(&e));
             o.resolve_error = Some(None);
             return Ok(o);
         }
@@ -477,7 +487,7 @@ pub fn run_check(
                 api_used_today: usage.provedeno.map(|p| p.saturating_add(used)),
                 api_limit: usage.limit,
                 aktualnost_dat: None,
-                error: Some(truncate(e.to_string())),
+                error: Some(error_text(&e)),
             });
             Err(e)
         }
@@ -540,7 +550,8 @@ fn execute(
             Err(CoreError::InvalidApiKey) => return Err(CoreError::InvalidApiKey),
             Err(e) => {
                 cis_error = Some(truncate(format!(
-                    "Číselníky územních jednotek se nepodařilo stáhnout: {e}"
+                    "Číselníky územních jednotek se nepodařilo stáhnout: {}",
+                    error_text(&e)
                 )))
             }
         }

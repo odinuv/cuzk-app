@@ -302,11 +302,8 @@ fn api_error_keeps_old_state_and_item_stays_due() {
     let res = e.db.item_results_for_run(s.run_id).unwrap();
     assert_eq!(res.len(), 1);
     assert_eq!(res[0].status, "error");
-    assert!(
-        res[0].error.as_deref().unwrap().contains("503"),
-        "{:?}",
-        res[0].error
-    );
+    // Only the status: response bodies (possibly HTML) are not stored.
+    assert_eq!(res[0].error.as_deref(), Some("HTTP chyba 503"));
     assert!(res[0].changes_json.is_none());
     // No false change, old state intact, still due.
     assert!(e
@@ -731,7 +728,7 @@ fn invalid_key_aborts_run_without_touching_items() {
     ));
     let run = &e.db.recent_runs(1).unwrap()[0];
     assert_eq!(run.status, "failed");
-    assert!(run.error.is_some());
+    assert_eq!(run.error.as_deref(), Some("HTTP chyba 400"));
     assert_eq!(e.item(a).last_success_at, ra.last_success_at);
 }
 
