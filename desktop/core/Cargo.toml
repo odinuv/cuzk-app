@@ -12,9 +12,11 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 urlencoding = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+fs4 = "1.1"
 
 [features]
 test-util = []
 
 [dev-dependencies]
 strazce-core = { path = ".", features = ["test-util"] }
+tempfile = "3"

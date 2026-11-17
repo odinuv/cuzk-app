@@ -129,6 +129,17 @@ pub struct FindingRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemResultRow {
+    pub id: i64,
+    pub run_id: i64,
+    pub item_id: i64,
+    pub status: String,
+    pub changes_json: Option<String>,
+    pub error: Option<String>,
+    pub seen: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KuOption {
     pub kod: u32,
     pub nazev: String,
@@ -382,6 +393,31 @@ impl Db {
             )
             .map_err(db_err)?;
         Ok(())
+    }
+
+    /// Results of one run in insertion order.
+    pub fn item_results_for_run(&self, run_id: i64) -> Result<Vec<ItemResultRow>> {
+        let mut st = self
+            .0
+            .prepare(
+                "SELECT id, run_id, item_id, status, changes_json, error, seen
+                 FROM item_results WHERE run_id = ?1 ORDER BY id",
+            )
+            .map_err(db_err)?;
+        let rows = st
+            .query_map([run_id], |r| {
+                Ok(ItemResultRow {
+                    id: r.get(0)?,
+                    run_id: r.get(1)?,
+                    item_id: r.get(2)?,
+                    status: r.get(3)?,
+                    changes_json: r.get(4)?,
+                    error: r.get(5)?,
+                    seen: r.get::<_, i64>(6)? != 0,
+                })
+            })
+            .map_err(db_err)?;
+        rows.map(|r| r.map_err(db_err)).collect()
     }
 
     pub fn count_item_results(&self) -> Result<i64> {

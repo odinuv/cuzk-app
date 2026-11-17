@@ -5,3 +5,5 @@ pub mod api;
 pub mod db;
 pub mod resolve;
 pub mod diff;
+pub mod lock;
+pub mod run;
