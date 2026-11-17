@@ -29,6 +29,8 @@ pub const DEFAULT_INTERVAL_DAYS: u32 = 14;
 /// Settings key holding the per-item check interval in days.
 pub const INTERVAL_SETTING: &str = "interval_days";
 const MAX_ERROR_LEN: usize = 300;
+/// Error stored on a `running` row left behind by a process that died mid-run.
+const MSG_INTERRUPTED: &str = "Kontrola byla přerušena.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Trigger {
@@ -450,6 +452,8 @@ pub fn run_check(
 ) -> Result<RunSummary, CoreError> {
     let _lock = RunLock::acquire(lock_path)?;
     let db: &Db = db;
+    // With the lock held no other run is in progress: `running` rows are leftovers.
+    db.fail_running_runs(MSG_INTERRUPTED)?;
     let run_id = db.begin_run(trigger.as_str(), now)?;
     let mut meter = Meter {
         client,

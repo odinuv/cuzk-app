@@ -949,3 +949,25 @@ fn plomba_present_at_first_check_is_reported() {
     let s = e.run(later).unwrap();
     assert_eq!((s.changed, s.plomby_nove), (0, 0));
 }
+
+#[test]
+fn stale_running_row_of_a_killed_process_is_marked_failed() {
+    let mut e = setup();
+    // A previous process died mid-run and left its row in `running`.
+    let stale = e.db.begin_run("scheduled", now() - Dur::hours(3)).unwrap();
+    let s = e.run(now()).unwrap();
+    let runs = e.db.recent_runs(5).unwrap();
+    let old = runs.iter().find(|r| r.id == stale).unwrap();
+    assert_eq!(old.status, "failed");
+    assert_eq!(old.error.as_deref(), Some("Kontrola byla přerušena."));
+    let new = runs.iter().find(|r| r.id == s.run_id).unwrap();
+    assert_eq!(new.status, "ok");
+
+    // A run that cannot take the lock leaves the other process's row alone.
+    let held = RunLock::acquire(&e.lock).unwrap();
+    let running = e.db.begin_run("manual", now()).unwrap();
+    assert_eq!(e.run(now()).err(), Some(CoreError::AlreadyRunning));
+    let r = e.db.recent_runs(1).unwrap();
+    assert_eq!((r[0].id, r[0].status.as_str()), (running, "running"));
+    drop(held);
+}

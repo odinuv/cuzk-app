@@ -393,6 +393,18 @@ impl Db {
         Ok(self.0.last_insert_rowid())
     }
 
+    /// Marks every run still `running` as `failed` with `error`. Only call while holding the
+    /// run lock, when such rows can only be left over from a process that died.
+    pub fn fail_running_runs(&self, error: &str) -> Result<()> {
+        self.0
+            .execute(
+                "UPDATE runs SET status = 'failed', error = ?1 WHERE status = 'running'",
+                [error],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
     pub fn finish_run(&self, r: &RunRecord) -> Result<()> {
         self.0
             .execute(
