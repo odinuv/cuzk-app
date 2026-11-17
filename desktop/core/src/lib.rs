@@ -7,3 +7,6 @@ pub mod resolve;
 pub mod diff;
 pub mod lock;
 pub mod run;
+pub mod secrets;
+pub mod schedule;
+pub mod headless;
