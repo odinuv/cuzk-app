@@ -968,3 +968,48 @@ fn stale_running_row_of_a_killed_process_is_marked_failed() {
     assert_eq!((r[0].id, r[0].status.as_str()), (running, "running"));
     drop(held);
 }
+
+#[test]
+fn unparseable_old_plomby_do_not_produce_false_new_plomby() {
+    let mut e = setup();
+    let id = add(&e.db, parcela(1));
+    e.stav(10, 500);
+    vyhledani(&e.mock, 101);
+    get_parcela(&e.mock, 101, 500, &[]);
+    e.run(now()).unwrap();
+    // A stored snapshot whose plomby cannot be read (e.g. an older format).
+    e.db.set_item_success(id, r#"{"id":101,"vymera":500,"rizeniPlomby":"???"}"#, now())
+        .unwrap();
+
+    let later = now() + Dur::days(15);
+    e.stav(0, 500);
+    get_parcela(&e.mock, 101, 500, &[5]);
+    e.mock.push("/Rizeni/", 400, "bad"); // only consumed by a (wrong) detail lookup
+    let s = e.run(later).unwrap();
+    assert_eq!((s.changed, s.plomby_nove, s.errors), (0, 0, 0));
+    assert_eq!(e.statuses(s.run_id), vec![(id, "unchanged".to_string())]);
+    // The new, readable snapshot is the baseline from now on.
+    let data: serde_json::Value =
+        serde_json::from_str(e.item(id).last_data.as_deref().unwrap()).unwrap();
+    assert_eq!(data["rizeniPlomby"][0]["id"], 5);
+}
+
+#[test]
+fn plomba_with_missing_fields_is_still_reported() {
+    let mut e = setup();
+    let id = add(&e.db, parcela(1));
+    e.stav(10, 500);
+    vyhledani(&e.mock, 101);
+    e.mock.push(
+        "/Parcely/",
+        200,
+        r#"{"data":{"id":101,"vymera":1,"rizeniPlomby":[{"id":8,"typRizeni":"V"}]}}"#,
+    );
+    e.mock.push("/Rizeni/", 400, "bad");
+    let s = e.run(now()).unwrap();
+    assert_eq!((s.errors, s.plomby_nove), (0, 1));
+    assert_eq!(e.statuses(s.run_id), vec![(id, "first".to_string())]);
+    let f = &e.db.unseen_findings().unwrap()[0];
+    let c: Changes = serde_json::from_str(f.changes_json.as_deref().unwrap()).unwrap();
+    assert_eq!(c.plomby_nove[0].rizeni.label(), "V-?/?-?");
+}

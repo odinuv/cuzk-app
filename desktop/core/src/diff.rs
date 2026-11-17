@@ -111,10 +111,10 @@ mod tests {
     fn rd(id: i64) -> RizeniDef {
         RizeniDef {
             id,
-            typ_rizeni: "V".into(),
-            poradove_cislo: 1,
-            rok: 2026,
-            kod_pracoviste: 701,
+            typ_rizeni: Some("V".into()),
+            poradove_cislo: Some(1),
+            rok: Some(2026),
+            kod_pracoviste: Some(701),
         }
     }
 

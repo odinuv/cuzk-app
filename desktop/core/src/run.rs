@@ -399,7 +399,12 @@ fn check_item(
             o
         }
         Some(old) => {
-            let (nove, zanikle) = diff_plomby(&plomby_of(&old).unwrap_or_default(), &new_plomby);
+            // Old plomby that cannot be read are not diffed at all: treating them as none
+            // would report every current plomba as new.
+            let (nove, zanikle) = match plomby_of(&old) {
+                Ok(old_plomby) => diff_plomby(&old_plomby, &new_plomby),
+                Err(_) => (Vec::new(), Vec::new()),
+            };
             let mut changes = Changes {
                 fields: diff_object(&old, &data),
                 plomby_nove: Vec::with_capacity(nove.len()),

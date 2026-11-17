@@ -46,12 +46,13 @@ export interface FieldChange {
   after: unknown | null;
 }
 
+/** Only `id` is guaranteed; the display parts may be missing in the API data. */
 export interface RizeniDef {
   id: number;
-  typRizeni: string;
-  poradoveCislo: number;
-  rok: number;
-  kodPracoviste: number;
+  typRizeni: string | null;
+  poradoveCislo: number | null;
+  rok: number | null;
+  kodPracoviste: number | null;
 }
 
 export interface KuOption {

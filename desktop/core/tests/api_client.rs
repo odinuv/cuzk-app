@@ -119,10 +119,21 @@ fn longest_prefix_wins() {
 fn rizeni_label() {
     let r = RizeniDef {
         id: 1,
-        typ_rizeni: "V".into(),
-        poradove_cislo: 1234,
-        rok: 2026,
-        kod_pracoviste: 701,
+        typ_rizeni: Some("V".into()),
+        poradove_cislo: Some(1234),
+        rok: Some(2026),
+        kod_pracoviste: Some(701),
     };
     assert_eq!(r.label(), "V-1234/2026-701");
+}
+
+#[test]
+fn rizeni_parses_leniently_with_only_id() {
+    let r: RizeniDef = serde_json::from_str(r#"{"id":8,"rok":2026}"#).unwrap();
+    assert_eq!(r.id, 8);
+    assert_eq!((r.typ_rizeni.as_deref(), r.rok), (None, Some(2026)));
+    assert_eq!(r.label(), "?-?/2026-?");
+    let bare: RizeniDef = serde_json::from_str(r#"{"id":8,"typRizeni":null}"#).unwrap();
+    assert_eq!(bare.label(), "řízení č. 8");
+    assert!(serde_json::from_str::<RizeniDef>(r#"{"typRizeni":"V"}"#).is_err());
 }

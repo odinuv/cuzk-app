@@ -38,6 +38,14 @@ describe("formatRizeni", () => {
       formatRizeni({ id: 9, typRizeni: "V", poradoveCislo: 1234, rok: 2026, kodPracoviste: 701 }),
     ).toBe("V-1234/2026-701");
   });
+  it("copes with missing parts like the core label", () => {
+    expect(formatRizeni({ id: 9, typRizeni: "V", poradoveCislo: null, rok: 2026, kodPracoviste: null })).toBe(
+      "V-?/2026-?",
+    );
+    expect(formatRizeni({ id: 9, typRizeni: null, poradoveCislo: null, rok: null, kodPracoviste: null })).toBe(
+      "řízení č. 9",
+    );
+  });
 });
 
 describe("statusLabel", () => {

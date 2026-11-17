@@ -15,9 +15,12 @@ export function formatChange(c: FieldChange): string {
   return `${c.path}: ${formatValue(c.before)} → ${formatValue(c.after)}`;
 }
 
-/** "V-1234/2026-701" */
+/** "V-1234/2026-701"; missing parts are "?", with none known "řízení č. <id>" (as the core's label). */
 export function formatRizeni(r: RizeniDef): string {
-  return `${r.typRizeni}-${r.poradoveCislo}/${r.rok}-${r.kodPracoviste}`;
+  const parts = [r.typRizeni, r.poradoveCislo, r.rok, r.kodPracoviste];
+  if (parts.every((p) => p === null || p === undefined)) return `řízení č. ${r.id}`;
+  const [t, c, y, k] = parts.map((p) => (p === null || p === undefined ? "?" : String(p)));
+  return `${t}-${c}/${y}-${k}`;
 }
 
 const STATUS_LABELS: Record<ItemStatus, string> = {
