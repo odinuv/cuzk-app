@@ -16,7 +16,8 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self) -> Result<()>;
 }
 
-/// Windows Credential Manager (via `keyring`).
+/// Windows Credential Manager (via `keyring`). keyring v3 names the generic credential
+/// `<user>.<service>`, i.e. `api-key.strazce-katastru` (that is what the README tells users).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct KeyringStore;
 

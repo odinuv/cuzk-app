@@ -13,7 +13,7 @@ Windows aplikace, která hlídá vybrané nemovitosti (parcely, stavby, jednotky
 ### API klíč ČÚZK
 Aplikace potřebuje vlastní klíč k API ČÚZK. Klíč je zdarma a umožňuje 500 volání za den. Získáte ho na https://www.cuzk.gov.cz (přesný odkaz se při prvním spuštění zobrazí v aplikaci s tlačítkem „Kopírovat adresu“). Klíč vložíte při prvním spuštění; aplikace ho ověří a ukáže limit, aktuální čerpání a platnost. Později ho změníte nebo smažete v Nastavení.
 
-Klíč se ukládá do Správce pověření systému Windows (Credential Manager) pod názvem `strazce-katastru`, ne do souboru.
+Klíč se ukládá do Správce pověření systému Windows (Credential Manager, část „Přihlašovací údaje systému Windows“, obecná pověření) jako položka `api-key.strazce-katastru`, ne do souboru.
 
 ### Plánovaná kontrola
 V Nastavení lze zapnout denní kontrolu v zadaný čas. Aplikace k tomu vytvoří úlohu `StrazceKatastru` v Plánovači úloh Windows, která spouští `strazce.exe --check` bez okna. Úloha běží jen pod přihlášeným uživatelem (kvůli úložišti klíčů a notifikacím). Když byl počítač v daný čas vypnutý nebo uspaný, kontrola proběhne hned, jakmile to jde (po zapnutí a přihlášení); běží i na baterii. V Nastavení je vidět, kdy plánovaná kontrola naposledy proběhla, a pokud neproběhla déle než 2 dny, aplikace na to upozorní. Vypnutím plánu se úloha smaže.
@@ -21,12 +21,12 @@ V Nastavení lze zapnout denní kontrolu v zadaný čas. Aplikace k tomu vytvoř
 ### Kde jsou data
 - Databáze: `%APPDATA%\cz.strazce-katastru.app\strazce.db`
 - Log chyb: `%APPDATA%\cz.strazce-katastru.app\strazce.log`
-- API klíč: Správce pověření Windows, položka `strazce-katastru`
+- API klíč: Správce pověření Windows, obecné pověření `api-key.strazce-katastru`
 
 ### Odinstalace a smazání dat
 1. V Nastavení aplikace smažte API klíč.
 2. Odinstalujte aplikaci (Nastavení Windows, Aplikace). Instalace je pro jednoho uživatele a nevyžaduje práva správce. Odinstalace smaže i úlohu `StrazceKatastru` z Plánovače úloh (při aktualizaci na novou verzi úloha zůstane).
-3. Chcete-li smazat i data, odstraňte složku `%APPDATA%\cz.strazce-katastru.app`. Případný zbylý klíč odstraníte ve Správci pověření (`strazce-katastru`) a zbylou úlohu příkazem `schtasks /Delete /F /TN StrazceKatastru`.
+3. Chcete-li smazat i data, odstraňte složku `%APPDATA%\cz.strazce-katastru.app`. Případný zbylý klíč odstraníte ve Správci pověření (`api-key.strazce-katastru`) a zbylou úlohu příkazem `schtasks /Delete /F /TN StrazceKatastru`.
 
 Instalátor používá zástupnou ikonu (bez finální grafiky).
 
