@@ -214,7 +214,8 @@ export const castiObciForKu = (ku: number) =>
 
 export const runCheck = () => invoke<RunSummary>("run_check");
 export const results = () => invoke<ResultsView>("results");
-export const markSeen = () => invoke<void>("mark_seen");
+/** Marks exactly these findings (the ones displayed) as seen. */
+export const markSeen = (resultIds: number[]) => invoke<void>("mark_seen", { resultIds });
 export const itemDetail = (id: number) => invoke<ItemDetail>("item_detail", { id });
 export const dueOverview = () => invoke<DueOverview>("due_overview");
 

@@ -634,11 +634,17 @@ impl Db {
         .collect()
     }
 
-    pub fn mark_all_seen(&self) -> Result<()> {
-        self.0
-            .execute("UPDATE item_results SET seen = 1 WHERE seen = 0", [])
-            .map_err(db_err)?;
-        Ok(())
+    /// Marks the given results as seen (the ones the UI displayed), nothing else.
+    pub fn mark_seen(&self, result_ids: &[i64]) -> Result<()> {
+        self.transaction(|db| {
+            let mut st =
+                db.0.prepare("UPDATE item_results SET seen = 1 WHERE id = ?1")
+                    .map_err(db_err)?;
+            for id in result_ids {
+                st.execute([id]).map_err(db_err)?;
+            }
+            Ok(())
+        })
     }
 
     // ---- číselníky cache ----

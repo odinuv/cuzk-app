@@ -72,8 +72,8 @@ pub async fn results(state: Shared<'_>) -> Result<ResultsView, String> {
 }
 
 #[tauri::command]
-pub async fn mark_seen(state: Shared<'_>) -> Result<(), String> {
-    blocking(state, commands::mark_seen).await
+pub async fn mark_seen(state: Shared<'_>, result_ids: Vec<i64>) -> Result<(), String> {
+    blocking(state, move |s| commands::mark_seen(s, result_ids)).await
 }
 
 #[tauri::command]

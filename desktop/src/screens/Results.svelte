@@ -32,7 +32,7 @@
   async function seen() {
     error = null;
     try {
-      await markSeen();
+      await markSeen(findings.map((f) => f.resultId));
       onchanged();
     } catch (err) {
       error = String(err);

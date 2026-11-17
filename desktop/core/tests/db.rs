@@ -185,10 +185,40 @@ fn unseen_findings_then_mark_seen() {
     assert_eq!(f.len(), 1);
     assert_eq!(f[0].status, "changed");
     assert_eq!(f[0].popis, "p1");
-    db.mark_all_seen().unwrap();
+    db.mark_seen(&[f[0].result_id]).unwrap();
     assert!(db.unseen_findings().unwrap().is_empty());
     assert_eq!(db.get_setting("k").unwrap(), None);
     db.set_setting("k", "v").unwrap();
     db.set_setting("k", "w").unwrap();
     assert_eq!(db.get_setting("k").unwrap(), Some("w".into()));
+}
+
+#[test]
+fn mark_seen_marks_only_the_given_results() {
+    let db = Db::open_in_memory().unwrap();
+    let id = db.insert_item(&new_item(1, true)).unwrap();
+    let run = db.begin_run("manual", now()).unwrap();
+    for _ in 0..3 {
+        db.insert_item_result(run, id, "changed", Some("{}"), None)
+            .unwrap();
+    }
+    db.finish_run(&finished(run)).unwrap();
+    let ids: Vec<i64> = db
+        .unseen_findings()
+        .unwrap()
+        .iter()
+        .map(|f| f.result_id)
+        .collect();
+    assert_eq!(ids.len(), 3);
+    // The UI showed only the first two; a result added later stays unseen.
+    db.mark_seen(&ids[..2]).unwrap();
+    let left: Vec<i64> = db
+        .unseen_findings()
+        .unwrap()
+        .iter()
+        .map(|f| f.result_id)
+        .collect();
+    assert_eq!(left, vec![ids[2]]);
+    db.mark_seen(&[]).unwrap();
+    assert_eq!(db.unseen_findings().unwrap().len(), 1);
 }

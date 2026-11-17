@@ -645,8 +645,9 @@ pub fn results(st: &AppState) -> Result<ResultsView, String> {
     })
 }
 
-pub fn mark_seen(st: &AppState) -> Result<(), String> {
-    lock_db(st).mark_all_seen().map_err(msg)
+/// Marks exactly the findings the UI displayed as seen; anything that arrived since stays.
+pub fn mark_seen(st: &AppState, result_ids: Vec<i64>) -> Result<(), String> {
+    lock_db(st).mark_seen(&result_ids).map_err(msg)
 }
 
 /// The item plus its last stored snapshot from the API (`lastData`, null before the first
@@ -1212,5 +1213,32 @@ mod tests {
         let err = search_ku(&t.st, "Pona".into()).unwrap_err();
         assert!(err.contains("limit"), "{err}");
         assert_eq!(t.mock.requested_urls().len(), 1);
+    }
+
+    #[test]
+    fn mark_seen_leaves_findings_that_arrived_after_display() {
+        let t = setup(false);
+        let v = save_item(&t.st, parcela_input()).unwrap();
+        let changed = |run| {
+            lock_db(&t.st)
+                .insert_item_result(run, v.id, "changed", Some("{}"), None)
+                .unwrap()
+        };
+        let run = lock_db(&t.st).begin_run("manual", Utc::now()).unwrap();
+        changed(run);
+        let displayed: Vec<i64> = results(&t.st)
+            .unwrap()
+            .findings
+            .iter()
+            .map(|f| f.result_id)
+            .collect();
+        assert_eq!(displayed.len(), 1);
+        // A scheduled run adds a finding while the user reads the list.
+        let later = lock_db(&t.st).begin_run("scheduled", Utc::now()).unwrap();
+        changed(later);
+        mark_seen(&t.st, displayed).unwrap();
+        let left = results(&t.st).unwrap().findings;
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].run_id, later);
     }
 }
