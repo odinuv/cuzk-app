@@ -64,14 +64,56 @@ CREATE INDEX idx_item_results_run ON item_results(run_id);
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 ";
 
-/// Applies all pending migrations, each in its own transaction. Idempotent.
+/// Applies all pending migrations, each in its own `BEGIN IMMEDIATE` transaction.
+/// Idempotent and safe when the UI and `--check` open the database at the same time: the
+/// version is re-read under the write lock, so a migration another process has just
+/// applied is skipped instead of failing on existing tables.
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    let current = conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? as usize;
-    for (i, sql) in MIGRATIONS.iter().enumerate().skip(current) {
-        conn.execute_batch(&format!(
-            "BEGIN; {sql} PRAGMA user_version = {}; COMMIT;",
-            i + 1
-        ))?;
+    for (i, sql) in MIGRATIONS.iter().enumerate() {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let applied = conn
+            .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .and_then(|current| {
+                if current as usize > i {
+                    Ok(())
+                } else {
+                    conn.execute_batch(&format!("{sql} PRAGMA user_version = {};", i + 1))
+                }
+            });
+        match applied {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn version(conn: &Connection) -> i64 {
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn second_connection_skips_applied_migrations() {
+        let dir = std::env::temp_dir().join(format!("strazce-mig-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.db");
+        let _ = std::fs::remove_file(&path);
+        let a = Connection::open(&path).unwrap();
+        let b = Connection::open(&path).unwrap();
+        migrate(&a).unwrap();
+        migrate(&b).unwrap();
+        migrate(&a).unwrap();
+        assert_eq!(version(&b), MIGRATIONS.len() as i64);
+        assert!(a.is_autocommit() && b.is_autocommit());
+        drop((a, b));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
