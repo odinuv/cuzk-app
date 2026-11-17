@@ -98,6 +98,17 @@
         <input type="time" bind:value={settings.scheduleTime} />
       </label>
     </div>
+    {#if settings.scheduleEnabled && settings.scheduleTaskPresent === false}
+      <p class="error">
+        Plánovaná úloha ve Windows chybí, automatická kontrola proto neběží. Uložte nastavení znovu, aby se
+        úloha vytvořila.
+      </p>
+    {:else if !settings.scheduleEnabled && settings.scheduleTaskPresent === true}
+      <p class="error">
+        V Plánovači úloh Windows zůstala úloha StrazceKatastru, přestože je plánovaná kontrola vypnutá. Uložte
+        nastavení znovu, aby se úloha smazala.
+      </p>
+    {/if}
     {#if settings.scheduleEnabled}
       <p class="small">
         Plánovaná kontrola naposledy proběhla:

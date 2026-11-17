@@ -192,6 +192,8 @@ export interface SettingsView extends Settings {
   lastScheduledRun: string | null;
   /** The schedule is on but no scheduled run happened in the last two days. */
   scheduleStale: boolean;
+  /** Whether the Windows task exists right now; null when unknown. */
+  scheduleTaskPresent: boolean | null;
 }
 
 export interface ItemDetail {

@@ -24,8 +24,8 @@ V Nastavení lze zapnout denní kontrolu v zadaný čas. Aplikace k tomu vytvoř
 - API klíč: Správce pověření Windows, položka `strazce-katastru`
 
 ### Odinstalace a smazání dat
-1. V Nastavení aplikace vypněte plánovanou kontrolu (smaže se úloha) a smažte API klíč.
-2. Odinstalujte aplikaci (Nastavení Windows, Aplikace). Instalace je pro jednoho uživatele a nevyžaduje práva správce.
+1. V Nastavení aplikace smažte API klíč.
+2. Odinstalujte aplikaci (Nastavení Windows, Aplikace). Instalace je pro jednoho uživatele a nevyžaduje práva správce. Odinstalace smaže i úlohu `StrazceKatastru` z Plánovače úloh (při aktualizaci na novou verzi úloha zůstane).
 3. Chcete-li smazat i data, odstraňte složku `%APPDATA%\cz.strazce-katastru.app`. Případný zbylý klíč odstraníte ve Správci pověření (`strazce-katastru`) a zbylou úlohu příkazem `schtasks /Delete /F /TN StrazceKatastru`.
 
 Instalátor používá zástupnou ikonu (bez finální grafiky).
@@ -73,3 +73,4 @@ Na čistém Windows:
 2. V Nastavení zapněte plánovanou kontrolu; `schtasks /Query /TN StrazceKatastru` musí úlohu zobrazit.
 3. `schtasks /Run /TN StrazceKatastru` musí spustit kontrolu bez konzolového okna a měla by se objevit notifikace.
 4. Vypněte plán v Nastavení; úloha musí zmizet (`schtasks /Query /TN StrazceKatastru` selže).
+5. Plán znovu zapněte a aplikaci odinstalujte; úloha musí zmizet i tentokrát.

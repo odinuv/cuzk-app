@@ -220,6 +220,9 @@ pub struct SettingsView {
     /// The schedule is on but no scheduled run happened in the last two days (or never,
     /// once it has been on for two days).
     pub schedule_stale: bool,
+    /// Whether the task exists in the Windows Task Scheduler right now (`None` when that
+    /// could not be determined). The UI warns when it disagrees with `schedule_enabled`.
+    pub schedule_task_present: Option<bool>,
 }
 
 // ---- helpers ----
@@ -731,6 +734,8 @@ fn read_settings(db: &Db) -> Result<Settings, String> {
 }
 
 fn settings_view(st: &AppState, now: DateTime<Utc>) -> Result<SettingsView, String> {
+    // Asked before taking the DB lock: it runs schtasks.
+    let schedule_task_present = st.scheduler.status().ok().map(|s| s.is_some());
     let db = lock_db(st);
     let settings = read_settings(&db)?;
     let last_scheduled_run = db
@@ -752,6 +757,7 @@ fn settings_view(st: &AppState, now: DateTime<Utc>) -> Result<SettingsView, Stri
         settings,
         last_scheduled_run,
         schedule_stale,
+        schedule_task_present,
     })
 }
 
@@ -1240,5 +1246,24 @@ mod tests {
         let left = results(&t.st).unwrap().findings;
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].run_id, later);
+    }
+
+    #[test]
+    fn get_settings_reports_whether_the_task_really_exists() {
+        let t = setup(false);
+        assert_eq!(
+            get_settings(&t.st).unwrap().schedule_task_present,
+            Some(false)
+        );
+        // Settings claim the schedule is on, but the task is gone (e.g. deleted by hand).
+        lock_db(&t.st).set_setting("schedule_enabled", "1").unwrap();
+        let v = get_settings(&t.st).unwrap();
+        assert!(v.settings.schedule_enabled);
+        assert_eq!(v.schedule_task_present, Some(false));
+        save_settings(&t.st, v.settings).unwrap();
+        assert_eq!(
+            get_settings(&t.st).unwrap().schedule_task_present,
+            Some(true)
+        );
     }
 }
