@@ -4,3 +4,4 @@ pub mod paths;
 pub mod api;
 pub mod db;
 pub mod resolve;
+pub mod diff;
