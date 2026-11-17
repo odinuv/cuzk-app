@@ -1,4 +1,3 @@
 [workspace]
 resolver = "2"
-# src-tauri joins the workspace in Task 8.
-members = ["core"]
+members = ["core", "src-tauri"]
