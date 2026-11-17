@@ -526,9 +526,13 @@ impl Db {
 
     // ---- findings ----
 
-    /// Unseen `changed` results, newest run first.
+    /// Unseen `changed` results and `first` results that carry plomby, newest run first.
     pub fn unseen_findings(&self) -> Result<Vec<FindingRow>> {
-        self.findings_where("r.seen = 0 AND r.status = 'changed'", None)
+        self.findings_where(
+            "r.seen = 0 AND (r.status = 'changed'
+                OR (r.status = 'first' AND r.changes_json IS NOT NULL))",
+            None,
+        )
     }
 
     /// Every per-item result of one run (all statuses), in item order.

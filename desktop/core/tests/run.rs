@@ -121,7 +121,7 @@ fn first_run_marks_first_and_stores_data() {
     let id = add(&e.db, parcela(182));
     e.stav(10, 500);
     vyhledani(&e.mock, 101);
-    get_parcela(&e.mock, 101, 500, &[7]);
+    get_parcela(&e.mock, 101, 500, &[]);
 
     let s = e.run(now()).unwrap();
     assert_eq!(s.status, RunStatus::Ok);
@@ -140,7 +140,7 @@ fn first_run_marks_first_and_stores_data() {
     assert_eq!(data["vymera"], 500);
     assert_eq!(row.last_success_at, Some(now()));
     assert_eq!(e.statuses(s.run_id), vec![(id, "first".to_string())]);
-    // A first check is not a finding, even though the object has a plomba.
+    // A first check without plomby is not a finding.
     assert!(e.db.unseen_findings().unwrap().is_empty());
     let runs = e.db.recent_runs(5).unwrap();
     assert_eq!(runs[0].id, s.run_id);
@@ -157,6 +157,7 @@ fn second_run_unchanged_no_findings() {
     e.stav(10, 500);
     vyhledani(&e.mock, 101);
     get_parcela(&e.mock, 101, 500, &[7]);
+    e.mock.push("/Rizeni/", 400, "bad"); // first check reports the plomba (no detail)
     e.run(now()).unwrap();
 
     let later = now() + Dur::days(15);
@@ -171,7 +172,12 @@ fn second_run_unchanged_no_findings() {
     assert!(e.db.item_results_for_run(s.run_id).unwrap()[0]
         .changes_json
         .is_none());
-    assert!(e.db.unseen_findings().unwrap().is_empty());
+    assert!(e
+        .db
+        .unseen_findings()
+        .unwrap()
+        .iter()
+        .all(|f| f.run_id != s.run_id));
     assert_eq!(e.item(id).last_success_at, Some(later));
 }
 
@@ -183,9 +189,10 @@ fn field_change_and_new_plomba_reported_with_detail() {
     e.stav(10, 500);
     vyhledani(&e.mock, 101);
     get_parcela(&e.mock, 101, 500, &[1]);
+    e.mock.push("/Rizeni/", 400, "bad");
     vyhledani(&e.mock, 102);
     get_parcela(&e.mock, 102, 300, &[]);
-    e.run(now()).unwrap();
+    let first = e.run(now()).unwrap();
 
     let later = now() + Dur::days(15);
     e.stav(0, 500);
@@ -211,7 +218,12 @@ fn field_change_and_new_plomba_reported_with_detail() {
         vec![(a, "changed".into()), (b, "changed".into())]
     );
 
-    let findings = e.db.unseen_findings().unwrap();
+    let findings: Vec<_> =
+        e.db.unseen_findings()
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.run_id != first.run_id)
+            .collect();
     assert_eq!(findings.len(), 2);
     let ca: Changes = serde_json::from_str(
         findings
@@ -274,7 +286,8 @@ fn api_error_keeps_old_state_and_item_stays_due() {
     e.stav(10, 500);
     vyhledani(&e.mock, 101);
     get_parcela(&e.mock, 101, 500, &[1]);
-    e.run(now()).unwrap();
+    e.mock.push("/Rizeni/", 400, "bad");
+    let first = e.run(now()).unwrap();
     let before = e.item(id);
 
     let later = now() + Dur::days(15);
@@ -296,7 +309,12 @@ fn api_error_keeps_old_state_and_item_stays_due() {
     );
     assert!(res[0].changes_json.is_none());
     // No false change, old state intact, still due.
-    assert!(e.db.unseen_findings().unwrap().is_empty());
+    assert!(e
+        .db
+        .unseen_findings()
+        .unwrap()
+        .iter()
+        .all(|f| f.run_id == first.run_id));
     let after = e.item(id);
     assert_eq!(after.last_data, before.last_data);
     assert_eq!(after.last_success_at, Some(now()));
@@ -875,4 +893,59 @@ fn item_deleted_during_run_does_not_fail_the_run() {
     assert_eq!(e.item(b).unwrap().last_success_at, Some(later));
     let run = &e.db.recent_runs(1).unwrap()[0];
     assert_eq!((run.status.as_str(), run.checked), ("ok", 1));
+}
+
+#[test]
+fn plomba_present_at_first_check_is_reported() {
+    let mut e = setup();
+    let a = add(&e.db, parcela(1));
+    let b = add(&e.db, parcela(2));
+    e.stav(10, 500);
+    vyhledani(&e.mock, 101);
+    get_parcela(&e.mock, 101, 500, &[7]);
+    e.mock.push(
+        "/Rizeni/",
+        200,
+        r#"{"data":{"id":7,"datumPrijeti":"2026-11-01T09:00:00","stav":"probíhá","provedeneOperace":[]}}"#,
+    );
+    vyhledani(&e.mock, 102);
+    get_parcela(&e.mock, 102, 300, &[]);
+
+    let s = e.run(now()).unwrap();
+    assert_eq!(s.status, RunStatus::Ok);
+    assert_eq!(
+        (s.checked, s.changed, s.plomby_nove, s.errors),
+        (2, 0, 1, 0)
+    );
+    assert_eq!(s.api_calls, 6); // StavUctu + 2×(Vyhledani + GET) + Rizeni detail
+    assert_eq!(
+        e.statuses(s.run_id),
+        vec![(a, "first".to_string()), (b, "first".to_string())]
+    );
+
+    let findings = e.db.unseen_findings().unwrap();
+    assert_eq!(
+        findings.len(),
+        1,
+        "only the first check with a plomba is a finding"
+    );
+    assert_eq!(
+        (findings[0].item_id, findings[0].status.as_str()),
+        (a, "first")
+    );
+    let c: Changes = serde_json::from_str(findings[0].changes_json.as_deref().unwrap()).unwrap();
+    assert!(c.fields.is_empty() && c.plomby_zanikle.is_empty());
+    assert_eq!(c.plomby_nove.len(), 1);
+    assert_eq!(c.plomby_nove[0].rizeni.id, 7);
+    assert_eq!(c.plomby_nove[0].stav.as_deref(), Some("probíhá"));
+    let res = e.db.item_results_for_run(s.run_id).unwrap();
+    assert!(res[1].changes_json.is_none());
+
+    // The plomba is part of the stored state: next time it is not new again.
+    let later = now() + Dur::days(15);
+    e.stav(0, 500);
+    get_parcela(&e.mock, 101, 500, &[7]);
+    get_parcela(&e.mock, 102, 300, &[]);
+    let s = e.run(later).unwrap();
+    assert_eq!((s.changed, s.plomby_nove), (0, 0));
 }

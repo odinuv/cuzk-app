@@ -15,6 +15,9 @@
   <span class="tag {f.status}">{statusLabel(f.status)}</span>
   <strong>{f.popis}</strong> <span class:muted={!plomba}>{f.describe}</span>
   {#if f.error}<div class="error">{f.error}</div>{/if}
+  {#if plomba && f.status === "First"}
+    <div class="small">Plomba byla na nemovitosti už při první kontrole.</div>
+  {/if}
   {#if nove.length > 0}
     <ul>
       {#each nove as p (p.rizeni.id)}

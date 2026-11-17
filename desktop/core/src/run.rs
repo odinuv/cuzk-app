@@ -95,7 +95,8 @@ pub struct PlombaDetail {
     pub operace: Vec<String>,
 }
 
-/// Stored as `item_results.changes_json` for `changed` results.
+/// Stored as `item_results.changes_json` for `changed` results, and for `first` results
+/// whose object already carries plomby (then only `plomby_nove` is filled).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Changes {
     pub fields: Vec<FieldChange>,
@@ -366,7 +367,25 @@ fn check_item(
 
     let mut o = match old {
         // Never checked, or the identification changed (update_item cleared last_data).
-        None => Outcome::new(id, ItemStatus::First),
+        // Plomby already present are reported: an ongoing proceeding matters right away.
+        None => {
+            let mut o = Outcome::new(id, ItemStatus::First);
+            if !new_plomby.is_empty() {
+                let mut changes = Changes {
+                    fields: Vec::new(),
+                    plomby_nove: Vec::with_capacity(new_plomby.len()),
+                    plomby_zanikle: Vec::new(),
+                };
+                for r in new_plomby {
+                    changes.plomby_nove.push(plomba_detail(client, meter, r)?);
+                }
+                o.plomby_nove = changes.plomby_nove.len() as u32;
+                o.changes_json = Some(
+                    serde_json::to_string(&changes).map_err(|e| CoreError::Db(e.to_string()))?,
+                );
+            }
+            o
+        }
         Some(old) => {
             let (nove, zanikle) = diff_plomby(&plomby_of(&old).unwrap_or_default(), &new_plomby);
             let mut changes = Changes {
