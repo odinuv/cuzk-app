@@ -43,10 +43,13 @@ const MSG_UI_BUDGET_KU: &str =
 /// Settings key prefix of the per-day counter of API calls made from the UI.
 const UI_CALLS_PREFIX: &str = "ui_api_calls_";
 /// Calls the UI leaves free for the checks when it decides whether to call the API.
-/// Must stay at least the run reserve (`run::budget_reserve()`), or the UI could eat
-/// into the calls a scheduled check keeps free.
+/// Used through `ui_reserve()`, which keeps it at least the run reserve so the UI never
+/// eats into the calls a scheduled check keeps free.
 const UI_RESERVE: i64 = 10;
-const _: () = assert!(UI_RESERVE >= run::DEFAULT_RESERVE);
+
+fn ui_reserve() -> i64 {
+    UI_RESERVE.max(run::budget_reserve())
+}
 /// Assumed daily limit while no run of today has reported the real one.
 const DEFAULT_DAILY_LIMIT: i64 = 500;
 
@@ -200,7 +203,7 @@ pub struct DueOverview {
     pub due_now: u32,
     /// Estimated number of due items that will not fit into today's remaining calls.
     pub waiting: u32,
-    /// `limit - used - 5`, or `None` without a key / when the account call fails.
+    /// `limit - used - safety margin` (the run reserve minus the StavUctu slot), or `None` without a key / when the account call fails.
     pub remaining_calls: Option<u32>,
 }
 
@@ -344,10 +347,7 @@ fn read_interval(db: &Db) -> Result<u32, String> {
 }
 
 fn remaining_from(s: &StavUctu) -> u32 {
-    // The API's `provedenoVolani` already excludes StavUctu's own slot, so only the
-    // safety part of the run reserve applies here.
-    let margin = (run::budget_reserve() - run::STAV_UCTU_RESERVE).max(0);
-    let left = i64::from(s.limit_volani) - i64::from(s.provedeno_volani) - margin;
+    let left = i64::from(s.limit_volani) - i64::from(s.provedeno_volani) - run::ui_margin();
     left.max(0) as u32
 }
 
@@ -403,7 +403,7 @@ fn ui_budget_ok(db: &Db) -> Result<bool, String> {
         ),
         None => (0, DEFAULT_DAILY_LIMIT),
     };
-    Ok(used + i64::from(ui_calls(db, today)?) + UI_RESERVE < limit)
+    Ok(used + i64::from(ui_calls(db, today)?) + ui_reserve() < limit)
 }
 
 // ---- API key and account ----
@@ -944,54 +944,28 @@ mod tests {
         assert!(t.sched.calls().is_empty());
     }
 
-    type Result<T> = std::result::Result<T, CoreError>;
+    use std::sync::atomic::Ordering;
 
-    struct FakeScheduler {
-        status_fails: bool,
-        enables: std::sync::atomic::AtomicU32,
-    }
-
-    impl Scheduler for FakeScheduler {
-        fn enable(&self, _: &Path, _: &str) -> Result<()> {
-            self.enables
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Err(CoreError::Network("boom".into()))
-        }
-        fn disable(&self) -> Result<()> {
-            Ok(())
-        }
-        fn status(&self) -> Result<Option<String>> {
-            if self.status_fails {
-                Err(CoreError::Network("boom".into()))
-            } else {
-                Ok(None)
-            }
-        }
-    }
-
-    fn with_fake(status_fails: bool) -> (T, Arc<FakeScheduler>) {
-        let mut t = setup(false);
-        let f = Arc::new(FakeScheduler {
-            status_fails,
-            enables: Default::default(),
-        });
-        t.st.scheduler = f.clone();
-        set_schedule(&t, true, "08:00");
-        (t, f)
+    fn flag(t: &T) -> &MockScheduler {
+        &t.sched
     }
 
     #[test]
     fn self_heal_does_nothing_when_status_errors() {
-        let (t, f) = with_fake(true);
+        let t = setup(false);
+        set_schedule(&t, true, "08:00");
+        flag(&t).fail_status.store(true, Ordering::SeqCst);
         assert_eq!(ensure_scheduled_task(&t.st), Ok(false));
-        assert_eq!(f.enables.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(t.sched.calls().is_empty());
     }
 
     #[test]
     fn self_heal_reports_enable_failure_without_panicking() {
-        let (t, f) = with_fake(false);
+        let t = setup(false);
+        set_schedule(&t, true, "08:00");
+        flag(&t).fail_enable.store(true, Ordering::SeqCst);
         assert!(ensure_scheduled_task(&t.st).is_err());
-        assert_eq!(f.enables.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(t.sched.calls().len(), 1);
     }
 
     #[test]

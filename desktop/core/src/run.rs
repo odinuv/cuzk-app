@@ -28,6 +28,12 @@ pub fn budget_reserve() -> i64 {
     DEFAULT_RESERVE
 }
 
+/// Margin for callers that read the API's `provedenoVolani`, which already excludes the
+/// StavUctu call's own slot: the run reserve minus that slot.
+pub fn ui_margin() -> i64 {
+    (budget_reserve() - STAV_UCTU_RESERVE).max(0)
+}
+
 /// Options of one check run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunConfig {

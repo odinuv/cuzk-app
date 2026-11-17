@@ -223,6 +223,10 @@ mod mock {
     #[derive(Debug, Default)]
     pub struct MockScheduler {
         calls: Mutex<Vec<SchedulerCall>>,
+        /// Makes `status` fail.
+        pub fail_status: std::sync::atomic::AtomicBool,
+        /// Makes `enable` fail (the attempt is still recorded in `calls`).
+        pub fail_enable: std::sync::atomic::AtomicBool,
     }
 
     impl MockScheduler {
@@ -238,6 +242,9 @@ mod mock {
                 exe: exe.to_path_buf(),
                 time: time.to_string(),
             });
+            if self.fail_enable.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(CoreError::Network("mock enable failure".into()));
+            }
             Ok(())
         }
         fn disable(&self) -> Result<()> {
@@ -245,6 +252,9 @@ mod mock {
             Ok(())
         }
         fn status(&self) -> Result<Option<String>> {
+            if self.fail_status.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(CoreError::Network("mock status failure".into()));
+            }
             Ok(match self.calls.lock().unwrap().last() {
                 Some(SchedulerCall::Enable { .. }) => Some("enabled".to_string()),
                 _ => None,
