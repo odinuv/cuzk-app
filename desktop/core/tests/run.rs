@@ -7,7 +7,7 @@ use strazce_core::db::{Db, ItemRow, NewItem};
 use strazce_core::error::CoreError;
 use strazce_core::lock::RunLock;
 use strazce_core::model::*;
-use strazce_core::run::{run_check, Changes, RunStatus, Trigger};
+use strazce_core::run::{run_check, Changes, RunConfig, RunStatus, Trigger};
 use tempfile::TempDir;
 
 struct Env {
@@ -35,7 +35,14 @@ fn setup() -> Env {
 
 impl Env {
     fn run(&mut self, now: DateTime<Utc>) -> Result<strazce_core::run::RunSummary, CoreError> {
-        run_check(&self.client, &mut self.db, &self.lock, Trigger::Manual, now)
+        run_check(
+            &self.client,
+            &mut self.db,
+            &self.lock,
+            Trigger::Manual,
+            now,
+            &RunConfig::default(),
+        )
     }
 
     fn stav(&self, provedeno: u32, limit: u32) {
@@ -807,7 +814,14 @@ impl FileEnv {
     }
 
     fn run(&mut self, now: DateTime<Utc>) -> Result<strazce_core::run::RunSummary, CoreError> {
-        run_check(&self.client, &mut self.db, &self.lock, Trigger::Manual, now)
+        run_check(
+            &self.client,
+            &mut self.db,
+            &self.lock,
+            Trigger::Manual,
+            now,
+            &RunConfig::default(),
+        )
     }
 
     fn item(&self, id: i64) -> Option<ItemRow> {
@@ -1012,4 +1026,17 @@ fn plomba_with_missing_fields_is_still_reported() {
     let f = &e.db.unseen_findings().unwrap()[0];
     let c: Changes = serde_json::from_str(f.changes_json.as_deref().unwrap()).unwrap();
     assert_eq!(c.plomby_nove[0].rizeni.label(), "V-?/?-?");
+}
+
+#[test]
+fn larger_reserve_shrinks_the_budget() {
+    let mut e = setup();
+    let id = add(&e.db, parcela(1));
+    e.stav(480, 500);
+    // Default reserve 6: budget 14 would fit the item. Reserve 17 leaves 3 (< 4): deferred.
+    let cfg = RunConfig { reserve: 17 };
+    let s = run_check(&e.client, &mut e.db, &e.lock, Trigger::Manual, now(), &cfg).unwrap();
+    assert_eq!((s.checked, s.deferred), (0, 1));
+    assert_eq!(e.statuses(s.run_id), vec![(id, "deferred".to_string())]);
+    assert_eq!(RunConfig::default().reserve, 6);
 }

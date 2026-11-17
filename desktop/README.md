@@ -25,7 +25,7 @@ V Nastavení lze zapnout denní kontrolu v zadaný čas. Aplikace k tomu vytvoř
 
 ### Odinstalace a smazání dat
 1. V Nastavení aplikace smažte API klíč.
-2. Odinstalujte aplikaci (Nastavení Windows, Aplikace). Instalace je pro jednoho uživatele a nevyžaduje práva správce. Odinstalace smaže i úlohu `StrazceKatastru` z Plánovače úloh (při aktualizaci na novou verzi úloha zůstane).
+2. Odinstalujte aplikaci (Nastavení Windows, Aplikace). Instalace je pro jednoho uživatele a nevyžaduje práva správce. Odinstalace smaže i úlohu `StrazceKatastru` z Plánovače úloh (odinstalátor úlohu odstraní i při ruční aktualizaci na novou verzi; pokud bylo plánování zapnuté, aplikace ji při prvním spuštění znovu založí, proto je po aktualizaci potřeba aplikaci jednou spustit).
 3. Chcete-li smazat i data, odstraňte složku `%APPDATA%\cz.strazce-katastru.app`. Případný zbylý klíč odstraníte ve Správci pověření (`api-key.strazce-katastru`) a zbylou úlohu příkazem `schtasks /Delete /F /TN StrazceKatastru`.
 
 Instalátor používá zástupnou ikonu (bez finální grafiky).

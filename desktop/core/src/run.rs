@@ -17,7 +17,31 @@ use std::path::Path;
 pub const SAFETY_MARGIN: i64 = 5;
 /// Extra reserve: `client.calls()` already counts the StavUctu call, which the API's
 /// `provedenoVolani` does not, so this is deliberately one call conservative.
-const STAV_UCTU_RESERVE: i64 = 1;
+pub const STAV_UCTU_RESERVE: i64 = 1;
+/// Total calls a run keeps below the limit by default (`SAFETY_MARGIN` plus the
+/// deliberate `STAV_UCTU_RESERVE`; budget = limit - provedeno - reserve).
+pub const DEFAULT_RESERVE: i64 = SAFETY_MARGIN + STAV_UCTU_RESERVE;
+
+/// The one place every caller (headless, GUI, UI budget checks) reads the reserve from.
+/// A constant for now; it can later come from settings without touching call sites.
+pub fn budget_reserve() -> i64 {
+    DEFAULT_RESERVE
+}
+
+/// Options of one check run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunConfig {
+    /// Calls kept free below the daily limit (includes the StavUctu call's own slot).
+    pub reserve: i64,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        RunConfig {
+            reserve: budget_reserve(),
+        }
+    }
+}
 /// Worst case for one item without retries: resolve + GET, then on 404 re-resolve + GET.
 const MAX_CALLS_PER_ITEM: i64 = 4;
 /// Attempts one logical API call can make (1 + `MAX_RETRIES` in the client). Every request
@@ -464,6 +488,7 @@ pub fn run_check(
     lock_path: &Path,
     trigger: Trigger,
     now: DateTime<Utc>,
+    config: &RunConfig,
 ) -> Result<RunSummary, CoreError> {
     let _lock = RunLock::acquire(lock_path)?;
     let db: &Db = db;
@@ -476,7 +501,7 @@ pub fn run_check(
         budget: 0,
     };
     let mut usage = Usage::default();
-    match execute(client, db, run_id, now, &mut meter, &mut usage) {
+    match execute(client, db, run_id, now, config, &mut meter, &mut usage) {
         Ok(summary) => Ok(summary),
         Err(e) => {
             let used = meter.used();
@@ -504,6 +529,7 @@ fn execute(
     db: &Db,
     run_id: i64,
     now: DateTime<Utc>,
+    config: &RunConfig,
     meter: &mut Meter,
     usage: &mut Usage,
 ) -> Result<RunSummary, CoreError> {
@@ -536,10 +562,7 @@ fn execute(
     let stav = client.stav_uctu()?;
     usage.provedeno = Some(stav.provedeno_volani);
     usage.limit = Some(stav.limit_volani);
-    meter.budget = i64::from(stav.limit_volani)
-        - i64::from(stav.provedeno_volani)
-        - STAV_UCTU_RESERVE
-        - SAFETY_MARGIN;
+    meter.budget = i64::from(stav.limit_volani) - i64::from(stav.provedeno_volani) - config.reserve;
 
     let need_cis: HashSet<i64> = due
         .iter()

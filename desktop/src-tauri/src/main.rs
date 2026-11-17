@@ -96,6 +96,9 @@ fn main() {
         std::process::exit(headless());
     }
     let state = build_state().unwrap_or_else(|e| fatal(&e));
+    if let Err(e) = commands::ensure_scheduled_task(&state) {
+        log_line(&format!("Úlohu Plánovače se nepodařilo obnovit: {e}"));
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {

@@ -19,7 +19,7 @@ use strazce_core::error::CoreError;
 use strazce_core::model::{describe, item_key, validate, Item, ItemIdent};
 use strazce_core::resolve::{ensure_ciselniky, resolve};
 use strazce_core::run::{
-    self, Changes, ItemStatus, Trigger, DEFAULT_INTERVAL_DAYS, INTERVAL_SETTING, SAFETY_MARGIN,
+    self, Changes, ItemStatus, Trigger, DEFAULT_INTERVAL_DAYS, INTERVAL_SETTING,
 };
 use strazce_core::schedule::{validate_time, Scheduler};
 use strazce_core::secrets::SecretStore;
@@ -43,7 +43,10 @@ const MSG_UI_BUDGET_KU: &str =
 /// Settings key prefix of the per-day counter of API calls made from the UI.
 const UI_CALLS_PREFIX: &str = "ui_api_calls_";
 /// Calls the UI leaves free for the checks when it decides whether to call the API.
+/// Must stay at least the run reserve (`run::budget_reserve()`), or the UI could eat
+/// into the calls a scheduled check keeps free.
 const UI_RESERVE: i64 = 10;
+const _: () = assert!(UI_RESERVE >= run::DEFAULT_RESERVE);
 /// Assumed daily limit while no run of today has reported the real one.
 const DEFAULT_DAILY_LIMIT: i64 = 500;
 
@@ -341,7 +344,10 @@ fn read_interval(db: &Db) -> Result<u32, String> {
 }
 
 fn remaining_from(s: &StavUctu) -> u32 {
-    let left = i64::from(s.limit_volani) - i64::from(s.provedeno_volani) - SAFETY_MARGIN;
+    // The API's `provedenoVolani` already excludes StavUctu's own slot, so only the
+    // safety part of the run reserve applies here.
+    let margin = (run::budget_reserve() - run::STAV_UCTU_RESERVE).max(0);
+    let left = i64::from(s.limit_volani) - i64::from(s.provedeno_volani) - margin;
     left.max(0) as u32
 }
 
@@ -576,7 +582,15 @@ pub fn casti_obci_for_ku(st: &AppState, ku: u32) -> Result<Vec<CastObceOption>, 
 pub fn run_check(st: &AppState) -> Result<RunSummaryView, String> {
     let c = client(st)?;
     let mut db = Db::open(&st.db_path).map_err(msg)?;
-    let s = run::run_check(&c, &mut db, &st.lock_path, Trigger::Manual, Utc::now()).map_err(msg)?;
+    let s = run::run_check(
+        &c,
+        &mut db,
+        &st.lock_path,
+        Trigger::Manual,
+        Utc::now(),
+        &run::RunConfig::default(),
+    )
+    .map_err(msg)?;
     let next_due = db.next_due(read_interval(&db)?).map_err(msg)?;
     Ok(RunSummaryView {
         next_due,
@@ -761,6 +775,26 @@ fn settings_view(st: &AppState, now: DateTime<Utc>) -> Result<SettingsView, Stri
     })
 }
 
+/// Startup self-heal: the NSIS uninstaller of an older version removes the scheduled task,
+/// so when the schedule is enabled in settings but the task is missing, recreate it with
+/// the current exe and the saved time. Does nothing when the status cannot be read; a
+/// failure to recreate is returned to the caller (which only logs it).
+pub fn ensure_scheduled_task(st: &AppState) -> Result<bool, String> {
+    let settings = read_settings(&lock_db(st))?;
+    if !settings.schedule_enabled {
+        return Ok(false);
+    }
+    match st.scheduler.status() {
+        Ok(None) => {
+            st.scheduler
+                .enable(&st.exe_path, &settings.schedule_time)
+                .map_err(msg)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 /// Validates, updates the OS scheduled task (current exe, daily at `schedule_time`) and
 /// only then persists, so the stored settings never claim a task that was not created.
 pub fn save_settings(st: &AppState, s: Settings) -> Result<(), String> {
@@ -802,6 +836,7 @@ pub fn save_settings(st: &AppState, s: Settings) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use strazce_core::api::MockTransport;
     use strazce_core::lock::RunLock;
     use strazce_core::model::{DruhCislovani, ParcelaRef};
@@ -869,6 +904,104 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].popis, "Pole");
         assert!(items[0].resolve_error.is_some());
+    }
+
+    fn set_schedule(t: &T, enabled: bool, time: &str) {
+        let db = lock_db(&t.st);
+        db.set_setting(SCHEDULE_ENABLED_KEY, if enabled { "1" } else { "0" })
+            .unwrap();
+        db.set_setting(SCHEDULE_TIME_KEY, time).unwrap();
+    }
+
+    #[test]
+    fn self_heal_recreates_missing_task_with_saved_time() {
+        let t = setup(false);
+        set_schedule(&t, true, "09:30");
+        assert_eq!(ensure_scheduled_task(&t.st), Ok(true));
+        assert_eq!(
+            t.sched.calls(),
+            vec![SchedulerCall::Enable {
+                exe: PathBuf::from(r"C:\Test\strazce.exe"),
+                time: "09:30".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn self_heal_leaves_present_task_alone() {
+        let t = setup(false);
+        set_schedule(&t, true, "09:30");
+        t.sched.enable(Path::new("x.exe"), "09:30").unwrap();
+        assert_eq!(ensure_scheduled_task(&t.st), Ok(false));
+        assert_eq!(t.sched.calls().len(), 1);
+    }
+
+    #[test]
+    fn self_heal_skips_when_schedule_disabled() {
+        let t = setup(false);
+        set_schedule(&t, false, "09:30");
+        assert_eq!(ensure_scheduled_task(&t.st), Ok(false));
+        assert!(t.sched.calls().is_empty());
+    }
+
+    type Result<T> = std::result::Result<T, CoreError>;
+
+    struct FakeScheduler {
+        status_fails: bool,
+        enables: std::sync::atomic::AtomicU32,
+    }
+
+    impl Scheduler for FakeScheduler {
+        fn enable(&self, _: &Path, _: &str) -> Result<()> {
+            self.enables
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(CoreError::Network("boom".into()))
+        }
+        fn disable(&self) -> Result<()> {
+            Ok(())
+        }
+        fn status(&self) -> Result<Option<String>> {
+            if self.status_fails {
+                Err(CoreError::Network("boom".into()))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    fn with_fake(status_fails: bool) -> (T, Arc<FakeScheduler>) {
+        let mut t = setup(false);
+        let f = Arc::new(FakeScheduler {
+            status_fails,
+            enables: Default::default(),
+        });
+        t.st.scheduler = f.clone();
+        set_schedule(&t, true, "08:00");
+        (t, f)
+    }
+
+    #[test]
+    fn self_heal_does_nothing_when_status_errors() {
+        let (t, f) = with_fake(true);
+        assert_eq!(ensure_scheduled_task(&t.st), Ok(false));
+        assert_eq!(f.enables.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn self_heal_reports_enable_failure_without_panicking() {
+        let (t, f) = with_fake(false);
+        assert!(ensure_scheduled_task(&t.st).is_err());
+        assert_eq!(f.enables.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn remaining_keeps_todays_margin() {
+        let s = StavUctu {
+            provedeno_volani: 100,
+            limit_volani: 500,
+            expirace_api_key: None,
+        };
+        assert_eq!(remaining_from(&s), 395);
     }
 
     #[test]

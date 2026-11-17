@@ -3,7 +3,7 @@
 use crate::api::{ApiClient, Transport};
 use crate::db::Db;
 use crate::error::CoreError;
-use crate::run::{run_check, RunStatus, RunSummary, Trigger};
+use crate::run::{run_check, RunConfig, RunStatus, RunSummary, Trigger};
 use crate::secrets::SecretStore;
 use chrono::{DateTime, Utc};
 use std::path::Path;
@@ -150,7 +150,14 @@ pub fn run_headless(
         Err(_) => return fail("Databázi nelze otevřít."),
     };
     let client = ApiClient::new(transport, key);
-    match run_check(&client, &mut db, lock_path, Trigger::Scheduled, now) {
+    match run_check(
+        &client,
+        &mut db,
+        lock_path,
+        Trigger::Scheduled,
+        now,
+        &RunConfig::default(),
+    ) {
         Err(CoreError::InvalidApiKey) => no_key(),
         Err(CoreError::AlreadyRunning) => 3,
         Err(e) => fail(&format!(
