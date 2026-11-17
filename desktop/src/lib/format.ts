@@ -60,6 +60,12 @@ export function formatDateTime(iso: string | null | undefined): string {
   return Number.isNaN(d.getTime()) ? DASH : dateTimeFmt.format(d);
 }
 
+/** History line for runs that found nothing due: "3 prázdné běhy (nic nebylo na řadě)". */
+export function formatEmptyRuns(n: number): string {
+  const word = n === 1 ? "prázdný běh" : n >= 2 && n <= 4 ? "prázdné běhy" : "prázdných běhů";
+  return `${n} ${word} (nic nebylo na řadě)`;
+}
+
 /** "Na řadě: 5 · čeká: 0 · zbývá volání dnes: 412" */
 export function formatDue(d: DueOverview): string {
   const calls = d.remainingCalls === null ? DASH : String(d.remainingCalls);
@@ -69,6 +75,11 @@ export function formatDue(d: DueOverview): string {
 /** One-line summary of a finished check. */
 export function formatRunSummary(s: RunSummary): string {
   if (s.status === "failed") return s.error ?? "Kontrola selhala.";
+  if (s.checked + s.errors + s.deferred === 0) {
+    return s.nextDue
+      ? `Nic není na řadě – nejbližší kontrola ${formatDate(s.nextDue)}`
+      : "Nic není na řadě – žádná zapnutá nemovitost ke kontrole";
+  }
   const parts = [`zkontrolováno ${s.checked}`];
   if (s.changed > 0) parts.push(`změn ${s.changed}`);
   if (s.plombyNove > 0) parts.push(`nových plomb ${s.plombyNove}`);

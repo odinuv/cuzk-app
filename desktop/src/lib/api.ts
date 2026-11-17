@@ -112,6 +112,8 @@ export interface RunSummary {
   apiLimit: number;
   aktualnostDat: string | null;
   error: string | null;
+  /** When the next item becomes due; null without checked, enabled items. */
+  nextDue: string | null;
 }
 
 export interface PlombaView {
@@ -160,10 +162,14 @@ export interface RunView {
 export interface ResultsView {
   /** Unseen findings. */
   findings: FindingView[];
-  /** Per-item results of the last run (all statuses). */
+  /** Per-item results of `lastRun` (all statuses). */
   lastRunItems: FindingView[];
+  /** Newest run with a result (items checked, failed or deferred, or the run failed). */
   lastRun: RunView | null;
+  /** History without the runs that had nothing due. */
   runs: RunView[];
+  /** Runs with nothing due since `lastRun`. */
+  emptyRuns: number;
 }
 
 export interface DueOverview {

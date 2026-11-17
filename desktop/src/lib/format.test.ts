@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { formatChange, formatDate, detailRows, formatDue, formatRizeni, formatRunSummary, formatValue, statusLabel } from "./format";
+import {
+  formatChange, formatDate, detailRows, formatDue, formatEmptyRuns, formatRizeni, formatRunSummary, formatValue,
+  statusLabel,
+} from "./format";
 
 describe("formatChange", () => {
   it("renders path: before → after", () => {
@@ -70,6 +73,7 @@ describe("formatRunSummary", () => {
   const base = {
     runId: 1, status: "ok" as const, checked: 4, changed: 0, plombyNove: 0, errors: 0,
     deferred: 0, apiCalls: 5, apiUsedToday: 5, apiLimit: 500, aktualnostDat: null, error: null,
+    nextDue: null,
   };
   it("lists only non-zero counts", () => {
     expect(formatRunSummary(base)).toBe("zkontrolováno 4");
@@ -79,6 +83,23 @@ describe("formatRunSummary", () => {
   });
   it("shows the error of a failed run", () => {
     expect(formatRunSummary({ ...base, status: "failed", error: "Kontrola už běží." })).toBe("Kontrola už běží.");
+  });
+  it("says when nothing was due and when the next check is", () => {
+    const empty = { ...base, checked: 0, apiCalls: 0 };
+    expect(formatRunSummary({ ...empty, nextDue: "2026-12-01T08:00:00Z" })).toBe(
+      "Nic není na řadě – nejbližší kontrola 1. 12. 2026",
+    );
+    expect(formatRunSummary(empty)).toBe("Nic není na řadě – žádná zapnutá nemovitost ke kontrole");
+    // Only errors or deferred items: not "nothing due".
+    expect(formatRunSummary({ ...empty, deferred: 2 })).toBe("zkontrolováno 0 · odloženo na další den 2");
+  });
+});
+
+describe("formatEmptyRuns", () => {
+  it("uses Czech plural forms", () => {
+    expect(formatEmptyRuns(1)).toBe("1 prázdný běh (nic nebylo na řadě)");
+    expect(formatEmptyRuns(3)).toBe("3 prázdné běhy (nic nebylo na řadě)");
+    expect(formatEmptyRuns(12)).toBe("12 prázdných běhů (nic nebylo na řadě)");
   });
 });
 

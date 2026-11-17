@@ -108,6 +108,9 @@ pub struct RunSummaryView {
     pub api_limit: u32,
     pub aktualnost_dat: Option<String>,
     pub error: Option<String>,
+    /// When the next item becomes due (`None` without checked, enabled items); lets the UI
+    /// say when the next check will do something after a run that had nothing due.
+    pub next_due: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -167,10 +170,15 @@ pub struct RunView {
 #[serde(rename_all = "camelCase")]
 pub struct ResultsView {
     pub findings: Vec<FindingView>,
-    /// Per-item results of the last run (all statuses).
+    /// Per-item results of `last_run` (all statuses).
     pub last_run_items: Vec<FindingView>,
+    /// The newest run with a result (items checked, failed or deferred, or the run failed);
+    /// daily scheduled runs with nothing due do not hide it.
     pub last_run: Option<RunView>,
+    /// History without the runs that had nothing due.
     pub runs: Vec<RunView>,
+    /// Runs with nothing due since `last_run` (all of them when there is none).
+    pub empty_runs: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -479,7 +487,9 @@ pub fn run_check(st: &AppState) -> Result<RunSummaryView, String> {
     let c = client(st)?;
     let mut db = Db::open(&st.db_path).map_err(msg)?;
     let s = run::run_check(&c, &mut db, &st.lock_path, Trigger::Manual, Utc::now()).map_err(msg)?;
+    let next_due = db.next_due(read_interval(&db)?).map_err(msg)?;
     Ok(RunSummaryView {
+        next_due,
         run_id: s.run_id,
         status: s.status.as_str().to_string(),
         checked: s.checked,
@@ -521,12 +531,15 @@ pub fn results(st: &AppState) -> Result<ResultsView, String> {
         .map(finding_view)
         .collect();
     let runs: Vec<RunView> = db
-        .recent_runs(RUNS_LIMIT)
+        .recent_nonempty_runs(RUNS_LIMIT)
         .map_err(msg)?
         .into_iter()
         .map(run_view)
         .collect();
-    let last_run = runs.first().cloned();
+    let last_run = db.last_result_run().map_err(msg)?.map(run_view);
+    let empty_runs = db
+        .count_empty_runs_after(last_run.as_ref().map(|r| r.id))
+        .map_err(msg)?;
     let last_run_items = match &last_run {
         Some(r) => db
             .run_findings(r.id)
@@ -541,6 +554,7 @@ pub fn results(st: &AppState) -> Result<ResultsView, String> {
         last_run,
         last_run_items,
         runs,
+        empty_runs,
     })
 }
 
@@ -801,7 +815,10 @@ mod tests {
         let s = run_check(&t.st).unwrap();
         assert_eq!(s.checked, 0);
         drop(guard);
-        assert_eq!(results(&t.st).unwrap().runs.len(), 1);
+        // The run had nothing due: collapsed out of the history, but counted.
+        let r = results(&t.st).unwrap();
+        assert!(r.runs.is_empty() && r.last_run.is_none());
+        assert_eq!(r.empty_runs, 1);
     }
 
     #[test]
@@ -815,6 +832,7 @@ mod tests {
                 .unwrap();
             db.insert_item_result(run, v.id, "unchanged", None, None)
                 .unwrap();
+            finish(&db, run, "ok", 1, 1, Utc::now());
         }
         let r = results(&t.st).unwrap();
         assert_eq!(r.last_run_items.len(), 2);
@@ -913,13 +931,17 @@ mod tests {
 
     fn scheduled_run(db: &Db, at: DateTime<Utc>) {
         let id = db.begin_run("scheduled", at).unwrap();
+        finish(db, id, "ok", 0, 0, at);
+    }
+
+    fn finish(db: &Db, id: i64, status: &str, checked: u32, errors: u32, at: DateTime<Utc>) {
         db.finish_run(&strazce_core::db::RunRecord {
             id,
             finished_at: at,
-            status: "ok".into(),
-            checked: 0,
+            status: status.into(),
+            checked,
             changed: 0,
-            errors: 0,
+            errors,
             deferred: 0,
             api_calls: 0,
             api_used_today: None,
@@ -972,5 +994,60 @@ mod tests {
         assert!(!v.schedule_stale);
         let v = settings_view(&t.st, now + chrono::Duration::days(5)).unwrap();
         assert!(v.schedule_stale);
+    }
+
+    #[test]
+    fn results_last_run_skips_empty_runs_and_history_collapses_them() {
+        let t = setup(false);
+        let v = save_item(&t.st, parcela_input()).unwrap();
+        let now = Utc::now();
+        {
+            let db = lock_db(&t.st);
+            let failed = db.begin_run("scheduled", now).unwrap();
+            finish(&db, failed, "failed", 0, 0, now);
+            let real = db.begin_run("manual", now).unwrap();
+            db.insert_item_result(real, v.id, "unchanged", None, None)
+                .unwrap();
+            finish(&db, real, "ok", 1, 0, now);
+            for _ in 0..3 {
+                scheduled_run(&db, now);
+            }
+        }
+        let r = results(&t.st).unwrap();
+        let last = r.last_run.expect("a run with checked items");
+        assert_eq!(last.checked, 1);
+        assert_eq!(r.last_run_items.len(), 1);
+        assert_eq!(
+            r.runs.iter().map(|x| x.status.as_str()).collect::<Vec<_>>(),
+            vec!["ok", "failed"]
+        );
+        assert_eq!(r.empty_runs, 3);
+
+        // A failed run is a real result even though it checked nothing.
+        {
+            let db = lock_db(&t.st);
+            let failed = db.begin_run("scheduled", now).unwrap();
+            finish(&db, failed, "failed", 0, 0, now);
+        }
+        let r = results(&t.st).unwrap();
+        assert_eq!(r.last_run.unwrap().status, "failed");
+        assert_eq!(r.empty_runs, 0);
+    }
+
+    #[test]
+    fn run_check_with_nothing_due_reports_next_due() {
+        let t = setup(true);
+        t.mock
+            .push("/Parcely/Vyhledani", 200, r#"{"data":[{"id":101}]}"#);
+        let v = save_item(&t.st, parcela_input()).unwrap();
+        let checked_at = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap()
+            - chrono::Duration::days(3);
+        lock_db(&t.st)
+            .set_item_success(v.id, "{}", checked_at)
+            .unwrap();
+        // Nothing is due: no API call at all (the mock has nothing queued).
+        let s = run_check(&t.st).unwrap();
+        assert_eq!((s.checked, s.errors, s.deferred), (0, 0, 0));
+        assert_eq!(s.next_due, Some(checked_at + chrono::Duration::days(14)));
     }
 }

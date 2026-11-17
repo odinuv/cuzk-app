@@ -1,6 +1,6 @@
 <script lang="ts">
   import { markSeen, type FindingView, type ResultsView } from "../lib/api";
-  import { formatDate, formatDateTime } from "../lib/format";
+  import { formatDate, formatDateTime, formatEmptyRuns } from "../lib/format";
   import FindingCard from "./FindingCard.svelte";
 
   let { data, onchanged, ondetail }: {
@@ -73,13 +73,16 @@
       <FindingCard {f} {ondetail} />
     {/each}
     {#if unchangedCount > 0}<p class="muted">{unchangedCount} dalších beze změn.</p>{/if}
+  {:else if data.emptyRuns > 0}
+    <div class="card muted">Zatím žádná kontrola s výsledkem – nic nebylo na řadě.</div>
   {:else}
     <div class="card muted">Kontrola zatím neproběhla. Použijte tlačítko „Zkontrolovat“.</div>
   {/if}
 
-  {#if data.runs.length > 0}
+  {#if data.runs.length > 0 || data.emptyRuns > 0}
     <h2>Historie kontrol</h2>
     <div class="card">
+      {#if data.emptyRuns > 0}<p class="muted small">Od poslední kontroly s výsledkem: {formatEmptyRuns(data.emptyRuns)}.</p>{/if}
       <ul class="history">
         {#each data.runs as r (r.id)}
           <li>

@@ -149,6 +149,10 @@ pub struct KuOption {
 
 pub struct Db(Connection);
 
+/// SQL condition over `runs`: a finished run that found nothing due.
+const EMPTY_RUN: &str =
+    "status IN ('ok', 'partial') AND checked = 0 AND errors = 0 AND deferred = 0";
+
 const ITEM_COLS: &str = "id, popis, enabled, ident_json, last_data, last_success_at, resolve_error";
 
 fn item_row(r: &Row) -> rusqlite::Result<ItemRowRaw> {
@@ -467,6 +471,47 @@ impl Db {
     /// Newest run first.
     pub fn recent_runs(&self, limit: u32) -> Result<Vec<RunRow>> {
         self.query_runs("1 = 1", limit, [])
+    }
+
+    /// Newest runs that did something: checked, failed or deferred an item, failed as a
+    /// whole, or are still running. Runs that found nothing due are left out.
+    pub fn recent_nonempty_runs(&self, limit: u32) -> Result<Vec<RunRow>> {
+        self.query_runs(&format!("NOT ({EMPTY_RUN})"), limit, [])
+    }
+
+    /// The newest finished run with a result to show: items checked, failed or deferred,
+    /// or the run itself failed.
+    pub fn last_result_run(&self) -> Result<Option<RunRow>> {
+        self.query_runs(
+            "status = 'failed' OR checked + errors + deferred > 0",
+            1,
+            [],
+        )
+        .map(|mut v| v.pop())
+    }
+
+    /// Runs that found nothing due, newer than run `after` (all of them for `None`).
+    pub fn count_empty_runs_after(&self, after: Option<i64>) -> Result<u32> {
+        self.0
+            .query_row(
+                &format!("SELECT COUNT(*) FROM runs WHERE {EMPTY_RUN} AND id > ?1"),
+                [after.unwrap_or(0)],
+                |r| r.get(0),
+            )
+            .map_err(db_err)
+    }
+
+    /// When the earliest enabled, already checked item becomes due again.
+    pub fn next_due(&self, interval_days: u32) -> Result<Option<DateTime<Utc>>> {
+        let oldest: Option<String> = self
+            .0
+            .query_row(
+                "SELECT MIN(last_success_at) FROM items WHERE enabled = 1",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        Ok(parse_opt_ts(oldest)?.map(|t| t + Duration::days(i64::from(interval_days))))
     }
 
     /// The newest run started by `trigger` (`manual` | `scheduled`).
