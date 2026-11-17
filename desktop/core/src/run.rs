@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 /// Calls kept in reserve below the daily limit.
-const SAFETY_MARGIN: i64 = 5;
+pub const SAFETY_MARGIN: i64 = 5;
 /// Extra reserve: `client.calls()` already counts the StavUctu call, which the API's
 /// `provedenoVolani` does not, so this is deliberately one call conservative.
 const STAV_UCTU_RESERVE: i64 = 1;
@@ -25,7 +25,7 @@ const MAX_CALLS_PER_ITEM: i64 = 4;
 const MAX_ATTEMPTS_PER_CALL: i64 = 3;
 /// Worst case for `ensure_ciselniky`: three lists, each with retries.
 const CISELNIKY_CALLS: i64 = 3 * MAX_ATTEMPTS_PER_CALL;
-const DEFAULT_INTERVAL_DAYS: u32 = 14;
+pub const DEFAULT_INTERVAL_DAYS: u32 = 14;
 /// Settings key holding the per-item check interval in days.
 pub const INTERVAL_SETTING: &str = "interval_days";
 const MAX_ERROR_LEN: usize = 300;

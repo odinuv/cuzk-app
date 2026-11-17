@@ -18,13 +18,12 @@ use strazce_core::diff::FieldChange;
 use strazce_core::error::CoreError;
 use strazce_core::model::{describe, item_key, validate, Item, ItemIdent};
 use strazce_core::resolve::{ensure_ciselniky, resolve};
-use strazce_core::run::{self, Changes, ItemStatus, Trigger, INTERVAL_SETTING};
+use strazce_core::run::{
+    self, Changes, ItemStatus, Trigger, DEFAULT_INTERVAL_DAYS, INTERVAL_SETTING, SAFETY_MARGIN,
+};
 use strazce_core::schedule::{validate_time, Scheduler};
 use strazce_core::secrets::SecretStore;
 
-/// Calls kept in reserve below the daily limit (same as the core's run budget).
-const SAFETY_MARGIN: u32 = 5;
-const DEFAULT_INTERVAL_DAYS: u32 = 14;
 const ALLOWED_INTERVALS: [u32; 3] = [7, 14, 30];
 const DEFAULT_TIME: &str = "08:00";
 const SCHEDULE_ENABLED_KEY: &str = "schedule_enabled";
@@ -40,6 +39,8 @@ pub struct AppState {
     pub transport: Arc<dyn Transport>,
     pub scheduler: Arc<dyn Scheduler>,
     pub lock_path: PathBuf,
+    /// Database file; `run_check` opens its own connection to it.
+    pub db_path: PathBuf,
     /// Executable registered with the scheduler (`std::env::current_exe()` in production).
     pub exe_path: PathBuf,
 }
@@ -294,7 +295,8 @@ fn read_interval(db: &Db) -> Result<u32, String> {
 }
 
 fn remaining_from(s: &StavUctu) -> u32 {
-    s.limit_volani.saturating_sub(s.provedeno_volani).saturating_sub(SAFETY_MARGIN)
+    let left = i64::from(s.limit_volani) - i64::from(s.provedeno_volani) - SAFETY_MARGIN;
+    left.max(0) as u32
 }
 
 // ---- API key and account ----
@@ -419,11 +421,12 @@ pub fn casti_obci_for_ku(st: &AppState, ku: u32) -> Result<Vec<CastObceOption>, 
 
 // ---- checks and results ----
 
-/// Manual check. Holds the Db mutex for the whole run (the core takes `&mut Db`), so other
-/// commands that touch the database wait until it finishes.
+/// Manual check. Uses its own connection to the database file (WAL), so the shared
+/// `Mutex<Db>` is not held during the run and other commands keep working. The core's
+/// `RunLock` makes a concurrent second run fail fast with "Kontrola už běží.".
 pub fn run_check(st: &AppState) -> Result<RunSummaryView, String> {
     let c = client(st)?;
-    let mut db = lock_db(st);
+    let mut db = Db::open(&st.db_path).map_err(msg)?;
     let s = run::run_check(&c, &mut db, &st.lock_path, Trigger::Manual, Utc::now()).map_err(msg)?;
     Ok(RunSummaryView {
         run_id: s.run_id,
@@ -569,6 +572,7 @@ mod tests {
 
     fn setup(with_key: bool) -> T {
         let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("strazce.db");
         let mock = Arc::new(MockTransport::new());
         let sched = Arc::new(MockScheduler::default());
         let secrets = Arc::new(MemoryStore::default());
@@ -576,11 +580,12 @@ mod tests {
             secrets.set("fake-key").unwrap();
         }
         let st = AppState {
-            db: Mutex::new(Db::open_in_memory().unwrap()),
+            db: Mutex::new(Db::open(&db_path).unwrap()),
             secrets,
             transport: mock.clone(),
             scheduler: sched.clone(),
             lock_path: dir.path().join("strazce.lock"),
+            db_path,
             exe_path: PathBuf::from(r"C:\Test\strazce.exe"),
         };
         T { st, mock, sched, _dir: dir }
@@ -627,6 +632,54 @@ mod tests {
         let t = setup(true);
         let _held = RunLock::acquire(&t.st.lock_path).unwrap();
         assert_eq!(run_check(&t.st).unwrap_err(), "Kontrola už běží.");
+        // No run row and no API call were made.
+        assert!(lock_db(&t.st).recent_runs(10).unwrap().is_empty());
+        assert!(t.mock.requested_urls().is_empty());
+    }
+
+    #[test]
+    fn run_check_does_not_hold_the_shared_db_mutex() {
+        let t = setup(true);
+        t.mock.push(
+            "/AplikacniSluzby/StavUctu",
+            200,
+            r#"{"idSluzby":1,"aktualniObdobi":"2026-11-17","provedenoVolani":10,"limitVolani":500,"expiraceApiKey":null}"#,
+        );
+        // Nothing is due, so the run is quick; the point is that it works while the
+        // shared connection is locked by someone else.
+        let guard = lock_db(&t.st);
+        let s = run_check(&t.st).unwrap();
+        assert_eq!(s.checked, 0);
+        drop(guard);
+        assert_eq!(results(&t.st).unwrap().runs.len(), 1);
+    }
+
+    #[test]
+    fn save_item_ambiguous_cast_obce_persists_with_manual_hint() {
+        let t = setup(true);
+        {
+            let db = lock_db(&t.st);
+            let now = Utc::now();
+            db.replace_ku(&[(610704, "Ponava".into(), 582786)], now).unwrap();
+            db.replace_obce(&[(582786, "Brno".into())], now).unwrap();
+            db.replace_casti_obci(&[(411981, "Zábrdovice".into(), 582786)], now).unwrap();
+        }
+        let input = ItemInput {
+            id: None,
+            popis: "Byt".into(),
+            enabled: true,
+            ident: ItemIdent::Jednotka {
+                ku: 610704,
+                typ: strazce_core::model::TypStavby::Cp,
+                cislo_domovni: 893,
+                cislo_jednotky: 37,
+                kod_casti_obce: None,
+            },
+        };
+        let v = save_item(&t.st, input).unwrap();
+        assert_eq!(v.kind, "jednotka");
+        assert!(v.resolve_error.unwrap().contains("vyberte ji ručně"));
+        assert_eq!(list_items(&t.st).unwrap().len(), 1);
     }
     #[test]
     fn save_settings_rejects_bad_values_without_touching_scheduler() {
