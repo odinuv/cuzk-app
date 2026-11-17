@@ -177,19 +177,26 @@ impl Db {
         Ok(Db(conn))
     }
 
-    /// Runs `f` inside one transaction: commit on `Ok`, roll back on `Err`.
+    /// Runs `f` inside one transaction: commit on `Ok`, roll back on `Err`, on a failed
+    /// `COMMIT` and when `f` panics, so the connection never stays inside a transaction.
     pub fn transaction<T>(&self, f: impl FnOnce(&Db) -> Result<T>) -> Result<T> {
-        self.0.execute_batch("BEGIN IMMEDIATE").map_err(db_err)?;
-        match f(self) {
-            Ok(v) => {
-                self.0.execute_batch("COMMIT").map_err(db_err)?;
-                Ok(v)
-            }
-            Err(e) => {
-                let _ = self.0.execute_batch("ROLLBACK");
-                Err(e)
+        struct RollbackGuard<'a>(Option<&'a Connection>);
+        impl Drop for RollbackGuard<'_> {
+            fn drop(&mut self) {
+                if let Some(conn) = self.0 {
+                    if !conn.is_autocommit() {
+                        let _ = conn.execute_batch("ROLLBACK");
+                    }
+                }
             }
         }
+
+        self.0.execute_batch("BEGIN IMMEDIATE").map_err(db_err)?;
+        let mut guard = RollbackGuard(Some(&self.0));
+        let v = f(self)?;
+        self.0.execute_batch("COMMIT").map_err(db_err)?;
+        guard.0 = None;
+        Ok(v)
     }
 
     // ---- items ----
@@ -626,5 +633,57 @@ impl Db {
             )
             .map_err(db_err)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setting_count(db: &Db) -> i64 {
+        db.0.query_row("SELECT COUNT(*) FROM settings", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn transaction_rolls_back_on_err() {
+        let db = Db::open_in_memory().unwrap();
+        let r: Result<()> = db.transaction(|db| {
+            db.set_setting("a", "1")?;
+            Err(CoreError::NotFound)
+        });
+        assert_eq!(r, Err(CoreError::NotFound));
+        assert_eq!(setting_count(&db), 0);
+        assert!(db.0.is_autocommit());
+    }
+
+    #[test]
+    fn transaction_rolls_back_on_panic() {
+        let db = Db::open_in_memory().unwrap();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _: Result<()> = db.transaction(|db| {
+                db.set_setting("a", "1")?;
+                panic!("boom");
+            });
+        }));
+        assert!(r.is_err());
+        assert!(db.0.is_autocommit(), "connection left inside a transaction");
+        assert_eq!(setting_count(&db), 0);
+        db.transaction(|db| db.set_setting("b", "2")).unwrap();
+        assert_eq!(setting_count(&db), 1);
+    }
+
+    #[test]
+    fn transaction_rolls_back_when_commit_fails() {
+        let db = Db::open_in_memory().unwrap();
+        let r = db.transaction(|db| {
+            // Deferred FK check makes COMMIT itself fail.
+            db.0.execute_batch("PRAGMA defer_foreign_keys = ON").map_err(db_err)?;
+            db.set_setting("a", "1")?;
+            db.insert_item_result(999, 999, "first", None, None)
+        });
+        assert!(matches!(r, Err(CoreError::Db(_))), "{r:?}");
+        assert!(db.0.is_autocommit(), "connection left inside a transaction");
+        assert_eq!(setting_count(&db), 0);
+        db.transaction(|db| db.set_setting("b", "2")).unwrap();
     }
 }
