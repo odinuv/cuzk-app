@@ -457,19 +457,12 @@ fn stale_iskn_id_404_re_resolves() {
     let s = e.run(later).unwrap();
     assert_eq!(s.api_calls, 4);
     assert_eq!(s.errors, 0);
-    // Compared against the old snapshot: only the ISKN id itself differs.
-    assert_eq!(e.statuses(s.run_id), vec![(id, "changed".to_string())]);
-    let c: Changes = serde_json::from_str(
-        e.db.item_results_for_run(s.run_id).unwrap()[0]
-            .changes_json
-            .as_deref()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        c.fields.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
-        vec!["id"]
-    );
+    // Same data under a new ISKN id: not a change.
+    assert_eq!(e.statuses(s.run_id), vec![(id, "unchanged".to_string())]);
+    assert!(e.db.item_results_for_run(s.run_id).unwrap()[0]
+        .changes_json
+        .is_none());
+    assert!(e.db.unseen_findings().unwrap().is_empty());
     assert_eq!(e.item(id).last_success_at, Some(later));
     assert_eq!(e.db.get_resolved(id).unwrap().unwrap().iskn_id, 202);
     assert!(e
@@ -478,6 +471,100 @@ fn stale_iskn_id_404_re_resolves() {
         .last()
         .unwrap()
         .ends_with("/Parcely/202"));
+}
+
+fn push_503s(mock: &MockTransport, prefix: &str) {
+    mock.push(prefix, 503, "Service Unavailable");
+    mock.push(prefix, 503, "Service Unavailable");
+}
+
+#[test]
+fn retries_never_exceed_budget() {
+    let mut e = setup();
+    let a = add(&e.db, parcela(1));
+    e.stav(0, 500);
+    vyhledani(&e.mock, 101);
+    get_parcela(&e.mock, 101, 1, &[]);
+    e.run(now()).unwrap();
+    let before = e.item(a);
+
+    // budget = 500 - 489 - 6 = 5; after StavUctu 4 left -> the item is admitted.
+    // GET 503,503,404 uses 3 attempts; the re-resolve would need 3 more but only 1 is left:
+    // the item is deferred instead of overshooting (unguarded it would reach 499).
+    let later = now() + Dur::days(15);
+    e.stav(489, 500);
+    push_503s(&e.mock, "/Parcely/");
+    e.mock.push("/Parcely/", 404, "");
+    let s = e.run(later).unwrap();
+    assert_eq!(s.status, RunStatus::Partial);
+    assert_eq!((s.checked, s.errors, s.deferred), (0, 0, 1));
+    assert_eq!(s.api_calls, 4);
+    assert!(s.api_used_today <= s.api_limit - 6, "{}", s.api_used_today);
+    assert_eq!(e.statuses(s.run_id), vec![(a, "deferred".to_string())]);
+    let after = e.item(a);
+    assert_eq!(after.last_data, before.last_data);
+    assert_eq!(after.last_success_at, before.last_success_at);
+    assert!(e.db.get_resolved(a).unwrap().is_none());
+    assert!(e
+        .db
+        .due_items(later, 14)
+        .unwrap()
+        .iter()
+        .any(|r| r.item.id == a));
+
+    // Every call needs two retries: budget 14 fits exactly two new items (6 attempts each).
+    let b = add(&e.db, parcela(2));
+    let c = add(&e.db, parcela(3));
+    e.stav(480, 500);
+    for k in [102, 103] {
+        push_503s(&e.mock, "/Parcely/Vyhledani");
+        vyhledani(&e.mock, k);
+        push_503s(&e.mock, "/Parcely/");
+        get_parcela(&e.mock, k, 1, &[]);
+    }
+    let s = e.run(later + Dur::hours(1)).unwrap();
+    assert_eq!(
+        e.statuses(s.run_id),
+        vec![
+            (b, "first".to_string()),
+            (c, "first".to_string()),
+            (a, "deferred".to_string())
+        ]
+    );
+    assert_eq!(s.api_calls, 13);
+    assert!(s.api_used_today <= s.api_limit - 6, "{}", s.api_used_today);
+}
+
+#[test]
+fn ciselniky_wait_when_budget_cannot_cover_them() {
+    let mut e = setup();
+    let j = add(
+        &e.db,
+        ItemIdent::Jednotka {
+            ku: 610704,
+            typ: TypStavby::Cp,
+            cislo_domovni: 893,
+            cislo_jednotky: 37,
+            kod_casti_obce: None,
+        },
+    );
+    let p = add(&e.db, parcela(1));
+    // budget 6, 5 left after StavUctu: < 9 needed for the three lists with retries.
+    e.stav(488, 500);
+    vyhledani(&e.mock, 101);
+    get_parcela(&e.mock, 101, 1, &[]);
+    let s = e.run(now()).unwrap();
+    assert_eq!(s.status, RunStatus::Partial);
+    assert_eq!(
+        e.statuses(s.run_id),
+        vec![(j, "deferred".to_string()), (p, "first".to_string())]
+    );
+    assert_eq!(s.api_calls, 3);
+    assert!(e
+        .mock
+        .requested_urls()
+        .iter()
+        .all(|u| !u.contains("Ciselniky")));
 }
 
 #[test]

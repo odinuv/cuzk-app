@@ -41,7 +41,9 @@ pub fn normalize(v: &Value) -> Value {
 fn collect(before: &Map<String, Value>, after: &Map<String, Value>, prefix: &str, top: bool, out: &mut Vec<FieldChange>) {
     let keys: BTreeSet<&String> = before.keys().chain(after.keys()).collect();
     for key in keys {
-        if top && key == "rizeniPlomby" {
+        // Plomby are diffed separately; the ISKN `id` is a lookup artifact (identity is
+        // fixed by the item's identification), so a re-resolved id is not a change.
+        if top && (key == "rizeniPlomby" || key == "id") {
             continue;
         }
         let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
@@ -57,7 +59,7 @@ fn collect(before: &Map<String, Value>, after: &Map<String, Value>, prefix: &str
 }
 
 /// Field-level diff of two cadastre objects (both normalized first).
-/// Top-level `rizeniPlomby` is excluded; output is sorted by path.
+/// Top-level `rizeniPlomby` and `id` are excluded; output is sorted by path.
 pub fn diff_object(before: &Value, after: &Value) -> Vec<FieldChange> {
     let empty = Map::new();
     let (nb, na) = (normalize(before), normalize(after));
@@ -125,6 +127,15 @@ mod tests {
         let d = diff_object(&a, &b);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].path, "x.rizeniPlomby");
+    }
+
+    #[test]
+    fn top_level_id_not_in_field_diff() {
+        let a = json!({"id": 101, "vymera": 5, "x": {"id": 1}});
+        let b = json!({"id": 202, "vymera": 5, "x": {"id": 2}});
+        let d = diff_object(&a, &b);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].path, "x.id");
     }
 
     #[test]

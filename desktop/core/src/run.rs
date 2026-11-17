@@ -20,6 +20,11 @@ const SAFETY_MARGIN: i64 = 5;
 const STAV_UCTU_RESERVE: i64 = 1;
 /// Worst case for one item without retries: resolve + GET, then on 404 re-resolve + GET.
 const MAX_CALLS_PER_ITEM: i64 = 4;
+/// Attempts one logical API call can make (1 + `MAX_RETRIES` in the client). Every request
+/// in a run needs this much budget left, so retries can never push usage past the budget.
+const MAX_ATTEMPTS_PER_CALL: i64 = 3;
+/// Worst case for `ensure_ciselniky`: three lists, each with retries.
+const CISELNIKY_CALLS: i64 = 3 * MAX_ATTEMPTS_PER_CALL;
 const DEFAULT_INTERVAL_DAYS: u32 = 14;
 /// Settings key holding the per-item check interval in days.
 pub const INTERVAL_SETTING: &str = "interval_days";
@@ -139,6 +144,15 @@ impl Meter<'_> {
     fn remaining(&self) -> i64 {
         self.budget - i64::from(self.used())
     }
+
+    /// `Err(Budget)` unless one more logical call (with all its retries) still fits.
+    fn guard(&self) -> Result<(), CoreError> {
+        if self.remaining() >= MAX_ATTEMPTS_PER_CALL {
+            Ok(())
+        } else {
+            Err(CoreError::Budget)
+        }
+    }
 }
 
 /// Everything recorded for one item; written in the final transaction.
@@ -222,7 +236,7 @@ fn plomba_detail(
         stav: None,
         operace: Vec::new(),
     };
-    if meter.remaining() < 1 {
+    if meter.guard().is_err() {
         return Ok(d);
     }
     let data = match client.get::<Value>(&format!("/Rizeni/{}", d.rizeni.id), &[]) {
@@ -244,26 +258,49 @@ fn object_path(endpoint: Endpoint, id: i64) -> String {
     format!("/{}/{id}", endpoint.as_str())
 }
 
+fn is_cached(db: &Db, row: &ItemRow) -> Result<bool, CoreError> {
+    let key = item_key(&row.item.ident);
+    Ok(db
+        .get_resolved(row.item.id)?
+        .is_some_and(|r| r.item_key == key))
+}
+
+/// `resolve` behind the budget guard; a lookup is one logical API call (a cache hit
+/// costs nothing and needs no budget).
+fn guarded_resolve(
+    client: &ApiClient,
+    db: &Db,
+    meter: &Meter,
+    row: &ItemRow,
+    cached: bool,
+) -> Result<(Endpoint, i64), CoreError> {
+    if !cached {
+        meter.guard()?;
+    }
+    resolve(client, db, row)
+}
+
 /// Resolves and fetches the object; on 404 for a cached ISKN id, clears the cache and
 /// re-resolves once. `resolved_ok` tells whether the last resolve attempt succeeded.
+/// `Err(Budget)` when a request no longer fits the budget (the item is deferred).
 fn fetch(
     client: &ApiClient,
     db: &Db,
+    meter: &Meter,
     row: &ItemRow,
     resolved_ok: &mut bool,
 ) -> Result<Envelope<Value>, CoreError> {
-    let key = item_key(&row.item.ident);
-    let was_cached = db
-        .get_resolved(row.item.id)?
-        .is_some_and(|r| r.item_key == key);
-    let (endpoint, id) = resolve(client, db, row)?;
+    let was_cached = is_cached(db, row)?;
+    let (endpoint, id) = guarded_resolve(client, db, meter, row, was_cached)?;
     *resolved_ok = true;
+    meter.guard()?;
     match client.get::<Value>(&object_path(endpoint, id), &[]) {
         Err(CoreError::NotFound) if was_cached => {
             db.clear_resolved(row.item.id)?;
             *resolved_ok = false;
-            let (endpoint, id) = resolve(client, db, row)?;
+            let (endpoint, id) = guarded_resolve(client, db, meter, row, false)?;
             *resolved_ok = true;
+            meter.guard()?;
             client.get::<Value>(&object_path(endpoint, id), &[])
         }
         other => other,
@@ -280,7 +317,7 @@ fn check_item(
 ) -> Result<Outcome, CoreError> {
     let id = row.item.id;
     let mut resolved_ok = false;
-    let fetched = fetch(client, db, row, &mut resolved_ok).and_then(|env| {
+    let fetched = fetch(client, db, meter, row, &mut resolved_ok).and_then(|env| {
         if env.data.is_object() {
             Ok(env)
         } else {
@@ -290,7 +327,10 @@ fn check_item(
     let env = match fetched {
         Ok(env) => env,
         Err(CoreError::InvalidApiKey) => return Err(CoreError::InvalidApiKey),
+        // Data untouched, the item stays due.
+        Err(CoreError::Budget) => return Ok(Outcome::new(id, ItemStatus::Deferred)),
         Err(CoreError::Resolve(msg)) => {
+            let msg = truncate(msg);
             let mut o = Outcome::error(id, msg.clone());
             o.resolve_error = Some(Some(msg));
             return Ok(o);
@@ -465,7 +505,9 @@ fn execute(
         .map(|r| r.item.id)
         .collect();
     let mut cis_error: Option<String> = None;
-    if !need_cis.is_empty() && meter.remaining() >= MAX_CALLS_PER_ITEM {
+    // Not enough budget for all three lists with retries -> those jednotky wait.
+    let cis_deferred = !need_cis.is_empty() && meter.remaining() < CISELNIKY_CALLS;
+    if !need_cis.is_empty() && !cis_deferred {
         match ensure_ciselniky(client, db, now) {
             Ok(_) => {}
             Err(CoreError::InvalidApiKey) => return Err(CoreError::InvalidApiKey),
@@ -485,12 +527,15 @@ fn execute(
         if !out_of_budget && meter.remaining() < MAX_CALLS_PER_ITEM {
             out_of_budget = true;
         }
-        let o = if out_of_budget {
+        let o = if out_of_budget || (cis_deferred && need_cis.contains(&id)) {
             Outcome::new(id, ItemStatus::Deferred)
         } else if let (true, Some(msg)) = (need_cis.contains(&id), &cis_error) {
             Outcome::error(id, msg.clone())
         } else {
-            check_item(client, db, meter, row, &mut aktualnost)?
+            let o = check_item(client, db, meter, row, &mut aktualnost)?;
+            // A request did not fit: everything after this item waits too.
+            out_of_budget |= o.status == ItemStatus::Deferred;
+            o
         };
         match o.status {
             ItemStatus::First | ItemStatus::Unchanged => summary.checked += 1,
