@@ -33,6 +33,9 @@ pub struct RizeniDef {
 impl RizeniDef {
     /// e.g. `V-1234/2026-701`
     pub fn label(&self) -> String {
-        format!("{}-{}/{}-{}", self.typ_rizeni, self.poradove_cislo, self.rok, self.kod_pracoviste)
+        format!(
+            "{}-{}/{}-{}",
+            self.typ_rizeni, self.poradove_cislo, self.rok, self.kod_pracoviste
+        )
     }
 }

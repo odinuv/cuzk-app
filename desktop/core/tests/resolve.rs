@@ -21,14 +21,28 @@ fn now() -> DateTime<Utc> {
 }
 
 fn add(db: &Db, ident: ItemIdent) -> ItemRow {
-    let id = db.insert_item(&NewItem { popis: "t".into(), enabled: true, ident }).unwrap();
-    db.list_items().unwrap().into_iter().find(|r| r.item.id == id).unwrap()
+    let id = db
+        .insert_item(&NewItem {
+            popis: "t".into(),
+            enabled: true,
+            ident,
+        })
+        .unwrap();
+    db.list_items()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.item.id == id)
+        .unwrap()
 }
 
 fn parcela(p: Option<u32>) -> ItemIdent {
     ItemIdent::Parcela {
         ku: 618853,
-        parcela: ParcelaRef { druh: DruhCislovani::Stavebni, kmenove: 182, poddeleni: p },
+        parcela: ParcelaRef {
+            druh: DruhCislovani::Stavebni,
+            kmenove: 182,
+            poddeleni: p,
+        },
     }
 }
 
@@ -43,7 +57,8 @@ fn jednotka(override_cast: Option<u32>) -> ItemIdent {
 }
 
 fn seed_brno(db: &Db) {
-    db.replace_ku(&[(610704, "Ponava".into(), 582786)], now()).unwrap();
+    db.replace_ku(&[(610704, "Ponava".into(), 582786)], now())
+        .unwrap();
     db.replace_casti_obci(
         &[
             (411973, "Ponava".into(), 582786),
@@ -58,13 +73,20 @@ fn seed_brno(db: &Db) {
 #[test]
 fn parcela_with_and_without_poddeleni() {
     let (mock, client, db) = setup();
-    mock.push("/Parcely/Vyhledani", 200, r#"{"data":[{"id":101,"stavba":null}]}"#);
+    mock.push(
+        "/Parcely/Vyhledani",
+        200,
+        r#"{"data":[{"id":101,"stavba":null}]}"#,
+    );
     mock.push("/Parcely/Vyhledani", 200, r#"{"data":[{"id":102}]}"#);
 
     let r = add(&db, parcela(None));
     assert_eq!(resolve(&client, &db, &r).unwrap(), (Endpoint::Parcely, 101));
     let r2 = add(&db, parcela(Some(2)));
-    assert_eq!(resolve(&client, &db, &r2).unwrap(), (Endpoint::Parcely, 102));
+    assert_eq!(
+        resolve(&client, &db, &r2).unwrap(),
+        (Endpoint::Parcely, 102)
+    );
 
     let urls = mock.requested_urls();
     assert!(urls[0].contains("KodKatastralnihoUzemi=618853"));
@@ -83,7 +105,10 @@ fn parcela_with_and_without_poddeleni() {
     }
     mock.push("/Parcely/Vyhledani", 200, r#"{"data":[{"id":1},{"id":2}]}"#);
     let r4 = add(&db, parcela(Some(4)));
-    assert!(matches!(resolve(&client, &db, &r4), Err(CoreError::Resolve(_))));
+    assert!(matches!(
+        resolve(&client, &db, &r4),
+        Err(CoreError::Resolve(_))
+    ));
 }
 
 fn stavba(cd: u32) -> ItemIdent {
@@ -91,7 +116,11 @@ fn stavba(cd: u32) -> ItemIdent {
         ku: 738395,
         typ: TypStavby::Cp,
         cislo_domovni: cd,
-        na_parcele: ParcelaRef { druh: DruhCislovani::Stavebni, kmenove: 10, poddeleni: None },
+        na_parcele: ParcelaRef {
+            druh: DruhCislovani::Stavebni,
+            kmenove: 10,
+            poddeleni: None,
+        },
     }
 }
 
@@ -111,9 +140,16 @@ fn stavba_via_parcel_checks_cislo_domovni() {
     }
     assert!(db.get_resolved(bad.item.id).unwrap().is_none());
 
-    mock.push("/Parcely/Vyhledani", 200, r#"{"data":[{"id":5,"stavba":null}]}"#);
+    mock.push(
+        "/Parcely/Vyhledani",
+        200,
+        r#"{"data":[{"id":5,"stavba":null}]}"#,
+    );
     let none = add(&db, stavba(15));
-    assert!(matches!(resolve(&client, &db, &none), Err(CoreError::Resolve(_))));
+    assert!(matches!(
+        resolve(&client, &db, &none),
+        Err(CoreError::Resolve(_))
+    ));
 }
 
 #[test]
@@ -122,7 +158,10 @@ fn jednotka_picks_cast_obce_by_name() {
     seed_brno(&db);
     mock.push("/Jednotky/Vyhledani", 200, r#"{"data":[{"id":4242}]}"#);
     let r = add(&db, jednotka(None));
-    assert_eq!(resolve(&client, &db, &r).unwrap(), (Endpoint::Jednotky, 4242));
+    assert_eq!(
+        resolve(&client, &db, &r).unwrap(),
+        (Endpoint::Jednotky, 4242)
+    );
     let u = &mock.requested_urls()[0];
     assert!(u.contains("KodCastiObce=411973"), "{u}");
     assert!(u.contains("TypStavby=1"));
@@ -134,16 +173,21 @@ fn jednotka_picks_cast_obce_by_name() {
 fn jednotka_ambiguous_cast_obce_errors() {
     let (mock, client, db) = setup();
     // zero candidates with that name
-    db.replace_ku(&[(610704, "Ponava".into(), 582786)], now()).unwrap();
-    db.replace_casti_obci(&[(411981, "Zábrdovice".into(), 582786)], now()).unwrap();
+    db.replace_ku(&[(610704, "Ponava".into(), 582786)], now())
+        .unwrap();
+    db.replace_casti_obci(&[(411981, "Zábrdovice".into(), 582786)], now())
+        .unwrap();
     let r = add(&db, jednotka(None));
     match resolve(&client, &db, &r) {
         Err(CoreError::Resolve(m)) => assert_eq!(m, AMBIGUOUS),
         other => panic!("{other:?}"),
     }
     // two candidates (differing only in case)
-    db.replace_casti_obci(&[(1, "Ponava".into(), 582786), (2, "PONAVA".into(), 582786)], now())
-        .unwrap();
+    db.replace_casti_obci(
+        &[(1, "Ponava".into(), 582786), (2, "PONAVA".into(), 582786)],
+        now(),
+    )
+    .unwrap();
     match resolve(&client, &db, &r) {
         Err(CoreError::Resolve(m)) => assert_eq!(m, AMBIGUOUS),
         other => panic!("{other:?}"),
@@ -159,7 +203,10 @@ fn jednotka_ambiguous_cast_obce_errors() {
             kod_casti_obce: None,
         },
     );
-    assert!(matches!(resolve(&client, &db, &r2), Err(CoreError::Resolve(_))));
+    assert!(matches!(
+        resolve(&client, &db, &r2),
+        Err(CoreError::Resolve(_))
+    ));
     assert!(mock.requested_urls().is_empty());
 }
 
@@ -213,19 +260,37 @@ fn ciselniky_refetched_only_when_stale() {
     assert_eq!(client.calls(), 3);
     assert_eq!(db.get_ku(610704).unwrap(), Some(("Ponava".into(), 582786)));
     // expired část obce is dropped
-    assert_eq!(db.casti_obci_for_obec(582786).unwrap(), vec![(411973, "Ponava".to_string())]);
+    assert_eq!(
+        db.casti_obci_for_obec(582786).unwrap(),
+        vec![(411973, "Ponava".to_string())]
+    );
 
     // fresh -> nothing
-    assert_eq!(ensure_ciselniky(&client, &db, now() + Dur::days(29)).unwrap(), 0);
+    assert_eq!(
+        ensure_ciselniky(&client, &db, now() + Dur::days(29)).unwrap(),
+        0
+    );
     assert_eq!(client.calls(), 3);
 
     // stale -> all three again
     push_ciselniky(&mock);
-    assert_eq!(ensure_ciselniky(&client, &db, now() + Dur::days(31)).unwrap(), 3);
+    assert_eq!(
+        ensure_ciselniky(&client, &db, now() + Dur::days(31)).unwrap(),
+        3
+    );
 
     // each list independently: only casti_obci stale
-    db.replace_ku(&[(610704, "Ponava".into(), 582786)], now() + Dur::days(60)).unwrap();
-    db.replace_obce(&[(582786, "Brno".into())], now() + Dur::days(60)).unwrap();
-    mock.push("/CiselnikyUzemnichJednotek/CastiObci", 200, r#"{"data":[]}"#);
-    assert_eq!(ensure_ciselniky(&client, &db, now() + Dur::days(62)).unwrap(), 1);
+    db.replace_ku(&[(610704, "Ponava".into(), 582786)], now() + Dur::days(60))
+        .unwrap();
+    db.replace_obce(&[(582786, "Brno".into())], now() + Dur::days(60))
+        .unwrap();
+    mock.push(
+        "/CiselnikyUzemnichJednotek/CastiObci",
+        200,
+        r#"{"data":[]}"#,
+    );
+    assert_eq!(
+        ensure_ciselniky(&client, &db, now() + Dur::days(62)).unwrap(),
+        1
+    );
 }

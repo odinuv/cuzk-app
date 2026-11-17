@@ -70,11 +70,7 @@ fn fetch_list(client: &ApiClient, name: &str) -> Result<Vec<CiselnikRow>, CoreEr
 /// when its stored copy is missing or older than 30 days. Returns the number of
 /// API calls made (0 when everything is fresh). Expired (`platnostDo`) části obce
 /// are not stored.
-pub fn ensure_ciselniky(
-    client: &ApiClient,
-    db: &Db,
-    now: DateTime<Utc>,
-) -> Result<u32, CoreError> {
+pub fn ensure_ciselniky(client: &ApiClient, db: &Db, now: DateTime<Utc>) -> Result<u32, CoreError> {
     let mut calls = 0;
     if is_stale(db.ciselnik_age("ku")?, now) {
         let rows = fetch_list(client, "KatastralniUzemi")?;
@@ -127,11 +123,7 @@ fn not_found() -> CoreError {
     CoreError::Resolve(NOT_FOUND.into())
 }
 
-fn lookup_parcela(
-    client: &ApiClient,
-    ku: u32,
-    p: &ParcelaRef,
-) -> Result<ParcelaLookup, CoreError> {
+fn lookup_parcela(client: &ApiClient, ku: u32, p: &ParcelaRef) -> Result<ParcelaLookup, CoreError> {
     let mut q: Vec<(&str, String)> = vec![
         ("KodKatastralnihoUzemi", ku.to_string()),
         ("TypParcely", "PKN".into()),
@@ -141,7 +133,9 @@ fn lookup_parcela(
     if let Some(d) = p.poddeleni {
         q.push(("PoddeleniCislaParcely", d.to_string()));
     }
-    let mut data = client.get::<Vec<ParcelaLookup>>("/Parcely/Vyhledani", &q)?.data;
+    let mut data = client
+        .get::<Vec<ParcelaLookup>>("/Parcely/Vyhledani", &q)?
+        .data;
     match data.len() {
         0 => Err(not_found()),
         1 => Ok(data.remove(0)),
@@ -175,14 +169,31 @@ fn lookup(client: &ApiClient, db: &Db, ident: &ItemIdent) -> Result<(Endpoint, i
         ItemIdent::Parcela { ku, parcela } => {
             Ok((Endpoint::Parcely, lookup_parcela(client, *ku, parcela)?.id))
         }
-        ItemIdent::Stavba { ku, cislo_domovni, na_parcele, .. } => {
-            let stavba = lookup_parcela(client, *ku, na_parcele)?.stavba.ok_or_else(not_found)?;
-            if !stavba.cisla_domovni.unwrap_or_default().contains(cislo_domovni) {
+        ItemIdent::Stavba {
+            ku,
+            cislo_domovni,
+            na_parcele,
+            ..
+        } => {
+            let stavba = lookup_parcela(client, *ku, na_parcele)?
+                .stavba
+                .ok_or_else(not_found)?;
+            if !stavba
+                .cisla_domovni
+                .unwrap_or_default()
+                .contains(cislo_domovni)
+            {
                 return Err(not_found());
             }
             Ok((Endpoint::Stavby, stavba.id))
         }
-        ItemIdent::Jednotka { ku, typ, cislo_domovni, cislo_jednotky, kod_casti_obce } => {
+        ItemIdent::Jednotka {
+            ku,
+            typ,
+            cislo_domovni,
+            cislo_jednotky,
+            kod_casti_obce,
+        } => {
             let cast = match kod_casti_obce {
                 Some(k) => *k,
                 None => resolve_cast_obce(db, *ku)?,
@@ -206,11 +217,7 @@ fn lookup(client: &ApiClient, db: &Db, ident: &ItemIdent) -> Result<(Endpoint, i
 /// identification, otherwise looks it up (and caches it). Does not refresh
 /// číselníky: for a jednotka without `kod_casti_obce` the caller must have run
 /// `ensure_ciselniky` first.
-pub fn resolve(
-    client: &ApiClient,
-    db: &Db,
-    item: &ItemRow,
-) -> Result<(Endpoint, i64), CoreError> {
+pub fn resolve(client: &ApiClient, db: &Db, item: &ItemRow) -> Result<(Endpoint, i64), CoreError> {
     let key = item_key(&item.item.ident);
     if let Some(r) = db.get_resolved(item.item.id)? {
         if r.item_key == key {
@@ -220,7 +227,11 @@ pub fn resolve(
     let (endpoint, id) = lookup(client, db, &item.item.ident)?;
     db.set_resolved(
         item.item.id,
-        &Resolved { item_key: key, endpoint: endpoint.as_str().to_string(), iskn_id: id },
+        &Resolved {
+            item_key: key,
+            endpoint: endpoint.as_str().to_string(),
+            iskn_id: id,
+        },
     )?;
     Ok((endpoint, id))
 }

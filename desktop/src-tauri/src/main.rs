@@ -31,7 +31,11 @@ fn log_line(msg: &str) {
 #[cfg(windows)]
 fn message_box(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let wide = |s: &str| {
+        s.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
     unsafe {
         MessageBoxW(
             std::ptr::null_mut(),
@@ -47,7 +51,9 @@ fn message_box(_text: &str) {}
 
 fn fatal(cause: &str) -> ! {
     log_line(cause);
-    message_box(&format!("Aplikaci Strážce katastru se nepodařilo spustit: {cause}"));
+    message_box(&format!(
+        "Aplikaci Strážce katastru se nepodařilo spustit: {cause}"
+    ));
     std::process::exit(1)
 }
 

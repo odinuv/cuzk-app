@@ -5,12 +5,20 @@ use strazce_core::model::{DruhCislovani, ItemIdent, ParcelaRef};
 fn ident(k: u32) -> ItemIdent {
     ItemIdent::Parcela {
         ku: 618853,
-        parcela: ParcelaRef { druh: DruhCislovani::Stavebni, kmenove: k, poddeleni: None },
+        parcela: ParcelaRef {
+            druh: DruhCislovani::Stavebni,
+            kmenove: k,
+            poddeleni: None,
+        },
     }
 }
 
 fn new_item(k: u32, enabled: bool) -> NewItem {
-    NewItem { popis: format!("p{k}"), enabled, ident: ident(k) }
+    NewItem {
+        popis: format!("p{k}"),
+        enabled,
+        ident: ident(k),
+    }
 }
 
 fn now() -> DateTime<Utc> {
@@ -55,9 +63,16 @@ fn due_order_never_checked_first_then_oldest() {
     let a = db.insert_item(&new_item(1, true)).unwrap();
     let b = db.insert_item(&new_item(2, true)).unwrap();
     let c = db.insert_item(&new_item(3, true)).unwrap();
-    db.set_item_success(a, "{}", now() - Duration::days(20)).unwrap();
-    db.set_item_success(b, "{}", now() - Duration::days(30)).unwrap();
-    let ids: Vec<i64> = db.due_items(now(), 14).unwrap().iter().map(|r| r.item.id).collect();
+    db.set_item_success(a, "{}", now() - Duration::days(20))
+        .unwrap();
+    db.set_item_success(b, "{}", now() - Duration::days(30))
+        .unwrap();
+    let ids: Vec<i64> = db
+        .due_items(now(), 14)
+        .unwrap()
+        .iter()
+        .map(|r| r.item.id)
+        .collect();
     assert_eq!(ids, vec![c, b, a]);
 }
 
@@ -67,9 +82,16 @@ fn due_excludes_disabled_and_fresh() {
     let fresh = db.insert_item(&new_item(1, true)).unwrap();
     let edge = db.insert_item(&new_item(2, true)).unwrap();
     let off = db.insert_item(&new_item(3, false)).unwrap();
-    db.set_item_success(fresh, "{}", now() - Duration::days(13)).unwrap();
-    db.set_item_success(edge, "{}", now() - Duration::days(14)).unwrap();
-    let ids: Vec<i64> = db.due_items(now(), 14).unwrap().iter().map(|r| r.item.id).collect();
+    db.set_item_success(fresh, "{}", now() - Duration::days(13))
+        .unwrap();
+    db.set_item_success(edge, "{}", now() - Duration::days(14))
+        .unwrap();
+    let ids: Vec<i64> = db
+        .due_items(now(), 14)
+        .unwrap()
+        .iter()
+        .map(|r| r.item.id)
+        .collect();
     assert_eq!(ids, vec![edge]);
     assert!(!ids.contains(&off));
 }
@@ -79,7 +101,15 @@ fn identity_change_resets_state_keeps_history() {
     let db = Db::open_in_memory().unwrap();
     let id = db.insert_item(&new_item(1, true)).unwrap();
     let key = strazce_core::model::item_key(&ident(1));
-    db.set_resolved(id, &strazce_core::db::Resolved { item_key: key, endpoint: "parcely".into(), iskn_id: 5 }).unwrap();
+    db.set_resolved(
+        id,
+        &strazce_core::db::Resolved {
+            item_key: key,
+            endpoint: "parcely".into(),
+            iskn_id: 5,
+        },
+    )
+    .unwrap();
     db.set_item_success(id, "{\"a\":1}", now()).unwrap();
     db.set_resolve_error(id, Some("x".into())).unwrap();
     let run = db.begin_run("manual", now()).unwrap();
@@ -110,7 +140,8 @@ fn delete_item_cascades_results() {
     let db = Db::open_in_memory().unwrap();
     let id = db.insert_item(&new_item(1, true)).unwrap();
     let run = db.begin_run("manual", now()).unwrap();
-    db.insert_item_result(run, id, "changed", Some("[]"), None).unwrap();
+    db.insert_item_result(run, id, "changed", Some("[]"), None)
+        .unwrap();
     db.delete_item(id).unwrap();
     assert_eq!(db.count_item_results().unwrap(), 0);
     assert!(db.list_items().unwrap().is_empty());
@@ -145,8 +176,10 @@ fn unseen_findings_then_mark_seen() {
     let id = db.insert_item(&new_item(1, true)).unwrap();
     let run = db.begin_run("manual", now()).unwrap();
     db.insert_item_result(run, id, "first", None, None).unwrap();
-    db.insert_item_result(run, id, "unchanged", None, None).unwrap();
-    db.insert_item_result(run, id, "changed", Some("[{\"x\":1}]"), None).unwrap();
+    db.insert_item_result(run, id, "unchanged", None, None)
+        .unwrap();
+    db.insert_item_result(run, id, "changed", Some("[{\"x\":1}]"), None)
+        .unwrap();
     db.finish_run(&finished(run)).unwrap();
     let f = db.unseen_findings().unwrap();
     assert_eq!(f.len(), 1);

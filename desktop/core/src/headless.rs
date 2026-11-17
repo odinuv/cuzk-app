@@ -153,7 +153,10 @@ pub fn run_headless(
     match run_check(&client, &mut db, lock_path, Trigger::Scheduled, now) {
         Err(CoreError::InvalidApiKey) => no_key(),
         Err(CoreError::AlreadyRunning) => 3,
-        Err(e) => fail(&format!("Kontrolu se nepodařilo dokončit: {}", describe(&e))),
+        Err(e) => fail(&format!(
+            "Kontrolu se nepodařilo dokončit: {}",
+            describe(&e)
+        )),
         Ok(s) => {
             let silent = s.checked == 0 && s.errors == 0 && s.deferred == 0;
             if !silent || s.status == RunStatus::Failed {

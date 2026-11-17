@@ -139,8 +139,14 @@ fn headless_no_key_exit_2_and_notifies() {
     let e = Env::new();
     let code = e.run(&MemoryStore::default());
     assert_eq!(code, 2);
-    assert_eq!(e.notifier.calls(), vec![("Katastr".to_string(), KEY_MSG.to_string())]);
-    assert!(!e.db_path().exists(), "DB must not be touched without a key");
+    assert_eq!(
+        e.notifier.calls(),
+        vec![("Katastr".to_string(), KEY_MSG.to_string())]
+    );
+    assert!(
+        !e.db_path().exists(),
+        "DB must not be touched without a key"
+    );
 }
 
 #[test]
@@ -207,7 +213,11 @@ fn headless_deferred_only_notifies_exit_0() {
     assert_eq!(e.run(&keyed()), 0);
     let calls = e.notifier.calls();
     assert_eq!(calls.len(), 1);
-    assert!(calls[0].1.contains("zbývá 1 položka na další dny"), "{}", calls[0].1);
+    assert!(
+        calls[0].1.contains("zbývá 1 položka na další dny"),
+        "{}",
+        calls[0].1
+    );
 }
 
 #[test]
@@ -254,7 +264,8 @@ fn headless_changes_notify_once() {
         .unwrap();
     }
     e.stav();
-    e.mock.push("/Parcely/Vyhledani", 200, r#"{"data":[{"id":101}]}"#);
+    e.mock
+        .push("/Parcely/Vyhledani", 200, r#"{"data":[{"id":101}]}"#);
     e.mock.push(
         "/Parcely/",
         200,

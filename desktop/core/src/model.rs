@@ -94,12 +94,22 @@ pub fn describe(ident: &ItemIdent) -> String {
         ItemIdent::Parcela { ku, parcela } => {
             format!("parcela {}, k.ú. {ku}", parcela_text(parcela))
         }
-        ItemIdent::Stavba { ku, typ, cislo_domovni, na_parcele } => format!(
+        ItemIdent::Stavba {
+            ku,
+            typ,
+            cislo_domovni,
+            na_parcele,
+        } => format!(
             "stavba {} {cislo_domovni} na {}, k.ú. {ku}",
             typ_text(*typ),
             parcela_text(na_parcele)
         ),
-        ItemIdent::Jednotka { ku, cislo_domovni, cislo_jednotky, .. } => {
+        ItemIdent::Jednotka {
+            ku,
+            cislo_domovni,
+            cislo_jednotky,
+            ..
+        } => {
             format!("jednotka {cislo_domovni}/{cislo_jednotky}, k.ú. {ku}")
         }
     }
@@ -125,14 +135,24 @@ pub fn validate(ident: &ItemIdent) -> Result<(), String> {
             check_ku(*ku)?;
             validate_parcela(parcela)
         }
-        ItemIdent::Stavba { ku, cislo_domovni, na_parcele, .. } => {
+        ItemIdent::Stavba {
+            ku,
+            cislo_domovni,
+            na_parcele,
+            ..
+        } => {
             check_ku(*ku)?;
             if *cislo_domovni == 0 {
                 return Err("Číslo domovní musí být větší než 0.".into());
             }
             validate_parcela(na_parcele)
         }
-        ItemIdent::Jednotka { ku, cislo_domovni, cislo_jednotky, .. } => {
+        ItemIdent::Jednotka {
+            ku,
+            cislo_domovni,
+            cislo_jednotky,
+            ..
+        } => {
             check_ku(*ku)?;
             if *cislo_domovni == 0 {
                 return Err("Číslo domovní musí být větší než 0.".into());
@@ -150,17 +170,34 @@ mod tests {
     use super::*;
 
     fn parcela(druh: DruhCislovani, k: u32, p: Option<u32>) -> ParcelaRef {
-        ParcelaRef { druh, kmenove: k, poddeleni: p }
+        ParcelaRef {
+            druh,
+            kmenove: k,
+            poddeleni: p,
+        }
     }
 
     fn pid(p: Option<u32>) -> ItemIdent {
-        ItemIdent::Parcela { ku: 618853, parcela: parcela(DruhCislovani::Stavebni, 182, p) }
+        ItemIdent::Parcela {
+            ku: 618853,
+            parcela: parcela(DruhCislovani::Stavebni, 182, p),
+        }
     }
 
     #[test]
     fn key_ignores_popis_and_enabled() {
-        let a = Item { id: 1, popis: "a".into(), enabled: true, ident: pid(Some(2)) };
-        let b = Item { id: 2, popis: "b".into(), enabled: false, ident: pid(Some(2)) };
+        let a = Item {
+            id: 1,
+            popis: "a".into(),
+            enabled: true,
+            ident: pid(Some(2)),
+        };
+        let b = Item {
+            id: 2,
+            popis: "b".into(),
+            enabled: false,
+            ident: pid(Some(2)),
+        };
         assert_eq!(item_key(&a.ident), item_key(&b.ident));
     }
 

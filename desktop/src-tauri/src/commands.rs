@@ -205,7 +205,11 @@ fn lock_db(st: &AppState) -> MutexGuard<'_, Db> {
 }
 
 fn stored_key(st: &AppState) -> Result<Option<String>, String> {
-    Ok(st.secrets.get().map_err(msg)?.filter(|k| !k.trim().is_empty()))
+    Ok(st
+        .secrets
+        .get()
+        .map_err(msg)?
+        .filter(|k| !k.trim().is_empty()))
 }
 
 /// A client for the stored key; `Err("Chybí API klíč.")` without one.
@@ -308,7 +312,13 @@ fn remaining_from(s: &StavUctu) -> u32 {
 /// Costs one API call (`StavUctu`) when a key is stored. An account-call failure is
 /// reported in `error`, not as a command error, so the UI still knows a key exists.
 pub fn api_status(st: &AppState) -> Result<ApiStatus, String> {
-    let mut out = ApiStatus { has_key: false, limit: None, used: None, expires: None, error: None };
+    let mut out = ApiStatus {
+        has_key: false,
+        limit: None,
+        used: None,
+        expires: None,
+        error: None,
+    };
     let Ok(c) = client(st) else {
         return Ok(out);
     };
@@ -354,7 +364,12 @@ pub fn delete_api_key(st: &AppState) -> Result<(), String> {
 // ---- items and k.ú. ----
 
 pub fn list_items(st: &AppState) -> Result<Vec<ItemView>, String> {
-    Ok(lock_db(st).list_items().map_err(msg)?.iter().map(item_view).collect())
+    Ok(lock_db(st)
+        .list_items()
+        .map_err(msg)?
+        .iter()
+        .map(item_view)
+        .collect())
 }
 
 /// Inserts or updates, then resolves right away. A resolve failure is stored in
@@ -365,26 +380,41 @@ pub fn save_item(st: &AppState, input: ItemInput) -> Result<ItemView, String> {
     let db = lock_db(st);
     let id = match input.id {
         Some(id) => {
-            db.update_item(&Item { id, popis, enabled: input.enabled, ident: input.ident })
-                .map_err(msg)?;
+            db.update_item(&Item {
+                id,
+                popis,
+                enabled: input.enabled,
+                ident: input.ident,
+            })
+            .map_err(msg)?;
             id
         }
         None => db
-            .insert_item(&NewItem { popis, enabled: input.enabled, ident: input.ident })
+            .insert_item(&NewItem {
+                popis,
+                enabled: input.enabled,
+                ident: input.ident,
+            })
             .map_err(msg)?,
     };
     // Without a key there is nothing to resolve against; the item is simply saved.
     if let Some(key) = stored_key(st)? {
         let c = ApiClient::new(st.transport.clone(), key);
         let row = find_item(&db, id)?;
-        let needs_ciselniky =
-            matches!(&row.item.ident, ItemIdent::Jednotka { kod_casti_obce: None, .. });
+        let needs_ciselniky = matches!(
+            &row.item.ident,
+            ItemIdent::Jednotka {
+                kod_casti_obce: None,
+                ..
+            }
+        );
         let resolved = if needs_ciselniky {
             ensure_ciselniky(&c, &db, Utc::now()).and_then(|_| resolve(&c, &db, &row))
         } else {
             resolve(&c, &db, &row)
         };
-        db.set_resolve_error(id, resolved.err().map(msg)).map_err(msg)?;
+        db.set_resolve_error(id, resolved.err().map(msg))
+            .map_err(msg)?;
     }
     Ok(item_view(&find_item(&db, id)?))
 }
@@ -467,16 +497,34 @@ fn finding_view(f: FindingRow) -> FindingView {
 
 pub fn results(st: &AppState) -> Result<ResultsView, String> {
     let db = lock_db(st);
-    let findings: Vec<FindingView> =
-        db.unseen_findings().map_err(msg)?.into_iter().map(finding_view).collect();
-    let runs: Vec<RunView> =
-        db.recent_runs(RUNS_LIMIT).map_err(msg)?.into_iter().map(run_view).collect();
+    let findings: Vec<FindingView> = db
+        .unseen_findings()
+        .map_err(msg)?
+        .into_iter()
+        .map(finding_view)
+        .collect();
+    let runs: Vec<RunView> = db
+        .recent_runs(RUNS_LIMIT)
+        .map_err(msg)?
+        .into_iter()
+        .map(run_view)
+        .collect();
     let last_run = runs.first().cloned();
     let last_run_items = match &last_run {
-        Some(r) => db.run_findings(r.id).map_err(msg)?.into_iter().map(finding_view).collect(),
+        Some(r) => db
+            .run_findings(r.id)
+            .map_err(msg)?
+            .into_iter()
+            .map(finding_view)
+            .collect(),
         None => Vec::new(),
     };
-    Ok(ResultsView { findings, last_run, last_run_items, runs })
+    Ok(ResultsView {
+        findings,
+        last_run,
+        last_run_items,
+        runs,
+    })
 }
 
 pub fn mark_seen(st: &AppState) -> Result<(), String> {
@@ -487,7 +535,10 @@ pub fn mark_seen(st: &AppState) -> Result<(), String> {
 /// successful check).
 pub fn item_detail(st: &AppState, id: i64) -> Result<Value, String> {
     let row = find_item(&lock_db(st), id)?;
-    let last_data = row.last_data.as_deref().and_then(|d| serde_json::from_str::<Value>(d).ok());
+    let last_data = row
+        .last_data
+        .as_deref()
+        .and_then(|d| serde_json::from_str::<Value>(d).ok());
     Ok(json!({ "item": item_view(&row), "lastData": last_data }))
 }
 
@@ -509,7 +560,10 @@ pub fn due_overview(st: &AppState) -> Result<DueOverview, String> {
             .collect();
         (due.len() as u32, costs)
     };
-    let remaining = client(st).ok().and_then(|c| c.stav_uctu().ok()).map(|s| remaining_from(&s));
+    let remaining = client(st)
+        .ok()
+        .and_then(|c| c.stav_uctu().ok())
+        .map(|s| remaining_from(&s));
     let waiting = match remaining {
         None => 0,
         Some(mut left) => costs
@@ -525,7 +579,11 @@ pub fn due_overview(st: &AppState) -> Result<DueOverview, String> {
             })
             .count() as u32,
     };
-    Ok(DueOverview { due_now, waiting, remaining_calls: remaining })
+    Ok(DueOverview {
+        due_now,
+        waiting,
+        remaining_calls: remaining,
+    })
 }
 
 // ---- settings ----
@@ -534,7 +592,11 @@ pub fn get_settings(st: &AppState) -> Result<Settings, String> {
     let db = lock_db(st);
     Ok(Settings {
         interval_days: read_interval(&db)?,
-        schedule_enabled: db.get_setting(SCHEDULE_ENABLED_KEY).map_err(msg)?.as_deref() == Some("1"),
+        schedule_enabled: db
+            .get_setting(SCHEDULE_ENABLED_KEY)
+            .map_err(msg)?
+            .as_deref()
+            == Some("1"),
         schedule_time: db
             .get_setting(SCHEDULE_TIME_KEY)
             .map_err(msg)?
@@ -552,15 +614,22 @@ pub fn save_settings(st: &AppState, s: Settings) -> Result<(), String> {
         return Err("Čas musí být ve formátu HH:MM.".into());
     }
     if s.schedule_enabled {
-        st.scheduler.enable(&st.exe_path, &s.schedule_time).map_err(msg)?;
+        st.scheduler
+            .enable(&st.exe_path, &s.schedule_time)
+            .map_err(msg)?;
     } else {
         st.scheduler.disable().map_err(msg)?;
     }
     let db = lock_db(st);
-    db.set_setting(INTERVAL_SETTING, &s.interval_days.to_string()).map_err(msg)?;
-    db.set_setting(SCHEDULE_ENABLED_KEY, if s.schedule_enabled { "1" } else { "0" })
+    db.set_setting(INTERVAL_SETTING, &s.interval_days.to_string())
         .map_err(msg)?;
-    db.set_setting(SCHEDULE_TIME_KEY, &s.schedule_time).map_err(msg)?;
+    db.set_setting(
+        SCHEDULE_ENABLED_KEY,
+        if s.schedule_enabled { "1" } else { "0" },
+    )
+    .map_err(msg)?;
+    db.set_setting(SCHEDULE_TIME_KEY, &s.schedule_time)
+        .map_err(msg)?;
     Ok(())
 }
 
@@ -598,7 +667,12 @@ mod tests {
             db_path,
             exe_path: PathBuf::from(r"C:\Test\strazce.exe"),
         };
-        T { st, mock, sched, _dir: dir }
+        T {
+            st,
+            mock,
+            sched,
+            _dir: dir,
+        }
     }
 
     fn parcela_input() -> ItemInput {
@@ -608,7 +682,11 @@ mod tests {
             enabled: true,
             ident: ItemIdent::Parcela {
                 ku: 618853,
-                parcela: ParcelaRef { druh: DruhCislovani::Stavebni, kmenove: 182, poddeleni: None },
+                parcela: ParcelaRef {
+                    druh: DruhCislovani::Stavebni,
+                    kmenove: 182,
+                    poddeleni: None,
+                },
             },
         }
     }
@@ -617,7 +695,8 @@ mod tests {
     fn save_item_with_resolve_error_still_persists() {
         let t = setup(true);
         t.mock.push("/Parcely/Vyhledani", 200, r#"{"data":[]}"#);
-        let v = save_item(&t.st, parcela_input()).expect("a resolve failure is not a command error");
+        let v =
+            save_item(&t.st, parcela_input()).expect("a resolve failure is not a command error");
         assert!(v.resolve_error.is_some());
         assert_eq!(v.kind, "parcela");
         let items = list_items(&t.st).unwrap();
@@ -629,11 +708,18 @@ mod tests {
     #[test]
     fn save_settings_enables_scheduler_with_current_exe() {
         let t = setup(false);
-        let s = Settings { interval_days: 7, schedule_enabled: true, schedule_time: "09:30".into() };
+        let s = Settings {
+            interval_days: 7,
+            schedule_enabled: true,
+            schedule_time: "09:30".into(),
+        };
         save_settings(&t.st, s).unwrap();
         assert_eq!(
             t.sched.calls(),
-            vec![SchedulerCall::Enable { exe: PathBuf::from(r"C:\Test\strazce.exe"), time: "09:30".into() }]
+            vec![SchedulerCall::Enable {
+                exe: PathBuf::from(r"C:\Test\strazce.exe"),
+                time: "09:30".into()
+            }]
         );
     }
 
@@ -671,13 +757,18 @@ mod tests {
         {
             let db = lock_db(&t.st);
             let run = db.begin_run("manual", Utc::now()).unwrap();
-            db.insert_item_result(run, v.id, "error", None, Some("Parcela nenalezena.")).unwrap();
-            db.insert_item_result(run, v.id, "unchanged", None, None).unwrap();
+            db.insert_item_result(run, v.id, "error", None, Some("Parcela nenalezena."))
+                .unwrap();
+            db.insert_item_result(run, v.id, "unchanged", None, None)
+                .unwrap();
         }
         let r = results(&t.st).unwrap();
         assert_eq!(r.last_run_items.len(), 2);
         assert_eq!(r.last_run_items[0].status, ItemStatus::Error);
-        assert_eq!(r.last_run_items[0].error.as_deref(), Some("Parcela nenalezena."));
+        assert_eq!(
+            r.last_run_items[0].error.as_deref(),
+            Some("Parcela nenalezena.")
+        );
         assert_eq!(r.last_run_items[1].error, None);
         assert!(r.findings.is_empty());
     }
@@ -688,9 +779,11 @@ mod tests {
         {
             let db = lock_db(&t.st);
             let now = Utc::now();
-            db.replace_ku(&[(610704, "Ponava".into(), 582786)], now).unwrap();
+            db.replace_ku(&[(610704, "Ponava".into(), 582786)], now)
+                .unwrap();
             db.replace_obce(&[(582786, "Brno".into())], now).unwrap();
-            db.replace_casti_obci(&[(411981, "Zábrdovice".into(), 582786)], now).unwrap();
+            db.replace_casti_obci(&[(411981, "Zábrdovice".into(), 582786)], now)
+                .unwrap();
         }
         let input = ItemInput {
             id: None,
@@ -712,12 +805,24 @@ mod tests {
     #[test]
     fn save_settings_rejects_bad_values_without_touching_scheduler() {
         let t = setup(false);
-        let bad_interval = Settings { interval_days: 10, schedule_enabled: true, schedule_time: "08:00".into() };
+        let bad_interval = Settings {
+            interval_days: 10,
+            schedule_enabled: true,
+            schedule_time: "08:00".into(),
+        };
         assert!(save_settings(&t.st, bad_interval).is_err());
-        let bad_time = Settings { interval_days: 14, schedule_enabled: true, schedule_time: "8h".into() };
+        let bad_time = Settings {
+            interval_days: 14,
+            schedule_enabled: true,
+            schedule_time: "8h".into(),
+        };
         assert!(save_settings(&t.st, bad_time).is_err());
         assert!(t.sched.calls().is_empty());
-        let ok = Settings { interval_days: 30, schedule_enabled: false, schedule_time: "07:15".into() };
+        let ok = Settings {
+            interval_days: 30,
+            schedule_enabled: false,
+            schedule_time: "07:15".into(),
+        };
         save_settings(&t.st, ok.clone()).unwrap();
         assert_eq!(get_settings(&t.st).unwrap(), ok);
         assert_eq!(t.sched.calls(), vec![SchedulerCall::Disable]);
@@ -728,7 +833,10 @@ mod tests {
         let t = setup(false);
         assert_eq!(run_check(&t.st).unwrap_err(), "Chybí API klíč.");
         t.mock.push("/AplikacniSluzby/StavUctu", 401, "");
-        assert_eq!(set_api_key(&t.st, "bad".into()).unwrap_err(), "API klíč je neplatný.");
+        assert_eq!(
+            set_api_key(&t.st, "bad".into()).unwrap_err(),
+            "API klíč je neplatný."
+        );
         assert!(!api_status(&t.st).unwrap().has_key);
 
         t.mock.push(
@@ -737,7 +845,11 @@ mod tests {
             r#"{"idSluzby":1,"aktualniObdobi":"2026-11-17","provedenoVolani":10,"limitVolani":500,"expiraceApiKey":null}"#,
         );
         for list in ["KatastralniUzemi", "Obce", "CastiObci"] {
-            t.mock.push(&format!("/CiselnikyUzemnichJednotek/{list}"), 200, r#"{"data":[]}"#);
+            t.mock.push(
+                &format!("/CiselnikyUzemnichJednotek/{list}"),
+                200,
+                r#"{"data":[]}"#,
+            );
         }
         let s = set_api_key(&t.st, " good-key ".into()).unwrap();
         assert!(s.has_key);

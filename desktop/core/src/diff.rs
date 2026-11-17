@@ -38,7 +38,13 @@ pub fn normalize(v: &Value) -> Value {
     }
 }
 
-fn collect(before: &Map<String, Value>, after: &Map<String, Value>, prefix: &str, top: bool, out: &mut Vec<FieldChange>) {
+fn collect(
+    before: &Map<String, Value>,
+    after: &Map<String, Value>,
+    prefix: &str,
+    top: bool,
+    out: &mut Vec<FieldChange>,
+) {
     let keys: BTreeSet<&String> = before.keys().chain(after.keys()).collect();
     for key in keys {
         // Plomby are diffed separately; the ISKN `id` is a lookup artifact (identity is
@@ -46,12 +52,20 @@ fn collect(before: &Map<String, Value>, after: &Map<String, Value>, prefix: &str
         if top && (key == "rizeniPlomby" || key == "id") {
             continue;
         }
-        let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
         match (before.get(key), after.get(key)) {
             (Some(Value::Object(b)), Some(Value::Object(a))) => collect(b, a, &path, false, out),
             (b, a) => {
                 if b != a {
-                    out.push(FieldChange { path, before: b.cloned(), after: a.cloned() });
+                    out.push(FieldChange {
+                        path,
+                        before: b.cloned(),
+                        after: a.cloned(),
+                    });
                 }
             }
         }
@@ -76,8 +90,16 @@ pub fn diff_plomby(before: &[RizeniDef], after: &[RizeniDef]) -> (Vec<RizeniDef>
     let bi: HashSet<i64> = before.iter().map(|r| r.id).collect();
     let ai: HashSet<i64> = after.iter().map(|r| r.id).collect();
     (
-        after.iter().filter(|r| !bi.contains(&r.id)).cloned().collect(),
-        before.iter().filter(|r| !ai.contains(&r.id)).cloned().collect(),
+        after
+            .iter()
+            .filter(|r| !bi.contains(&r.id))
+            .cloned()
+            .collect(),
+        before
+            .iter()
+            .filter(|r| !ai.contains(&r.id))
+            .cloned()
+            .collect(),
     )
 }
 
@@ -87,7 +109,13 @@ mod tests {
     use serde_json::json;
 
     fn rd(id: i64) -> RizeniDef {
-        RizeniDef { id, typ_rizeni: "V".into(), poradove_cislo: 1, rok: 2026, kod_pracoviste: 701 }
+        RizeniDef {
+            id,
+            typ_rizeni: "V".into(),
+            poradove_cislo: 1,
+            rok: 2026,
+            kod_pracoviste: 701,
+        }
     }
 
     #[test]
@@ -102,11 +130,14 @@ mod tests {
         let a = json!({"zpusobVyuziti": {"nazev": "orná půda", "kod": 2}});
         let b = json!({"zpusobVyuziti": {"nazev": "zahrada", "kod": 2}});
         let d = diff_object(&a, &b);
-        assert_eq!(d, vec![FieldChange {
-            path: "zpusobVyuziti.nazev".into(),
-            before: Some(json!("orná půda")),
-            after: Some(json!("zahrada")),
-        }]);
+        assert_eq!(
+            d,
+            vec![FieldChange {
+                path: "zpusobVyuziti.nazev".into(),
+                before: Some(json!("orná půda")),
+                after: Some(json!("zahrada")),
+            }]
+        );
     }
 
     #[test]
@@ -114,10 +145,21 @@ mod tests {
         let a = json!({"old": 1, "same": true});
         let b = json!({"new": 2, "same": true});
         let d = diff_object(&a, &b);
-        assert_eq!(d, vec![
-            FieldChange { path: "new".into(), before: None, after: Some(json!(2)) },
-            FieldChange { path: "old".into(), before: Some(json!(1)), after: None },
-        ]);
+        assert_eq!(
+            d,
+            vec![
+                FieldChange {
+                    path: "new".into(),
+                    before: None,
+                    after: Some(json!(2))
+                },
+                FieldChange {
+                    path: "old".into(),
+                    before: Some(json!(1)),
+                    after: None
+                },
+            ]
+        );
     }
 
     #[test]

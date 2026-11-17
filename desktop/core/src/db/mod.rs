@@ -157,7 +157,12 @@ fn item_row(r: &Row) -> rusqlite::Result<ItemRowRaw> {
         rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
     })?;
     Ok(ItemRowRaw {
-        item: Item { id: r.get(0)?, popis: r.get(1)?, enabled: r.get::<_, i64>(2)? != 0, ident },
+        item: Item {
+            id: r.get(0)?,
+            popis: r.get(1)?,
+            enabled: r.get::<_, i64>(2)? != 0,
+            ident,
+        },
         last_data: r.get(4)?,
         last_success_at: r.get(5)?,
         resolve_error: r.get(6)?,
@@ -182,7 +187,8 @@ impl Db {
 
     fn init(conn: Connection) -> Result<Db> {
         // journal_mode returns a row; in-memory databases just report "memory".
-        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(())).map_err(db_err)?;
+        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))
+            .map_err(db_err)?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
             .map_err(db_err)?;
         migrations::migrate(&conn).map_err(db_err)?;
@@ -214,12 +220,19 @@ impl Db {
     // ---- items ----
 
     pub fn insert_item(&self, n: &NewItem) -> Result<i64> {
-        let ident_json = serde_json::to_string(&n.ident).map_err(|e| CoreError::Db(e.to_string()))?;
+        let ident_json =
+            serde_json::to_string(&n.ident).map_err(|e| CoreError::Db(e.to_string()))?;
         self.0
             .execute(
                 "INSERT INTO items (popis, enabled, ident_json, item_key, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![n.popis, n.enabled, ident_json, item_key(&n.ident), ts(Utc::now())],
+                params![
+                    n.popis,
+                    n.enabled,
+                    ident_json,
+                    item_key(&n.ident),
+                    ts(Utc::now())
+                ],
             )
             .map_err(db_err)?;
         Ok(self.0.last_insert_rowid())
@@ -257,7 +270,9 @@ impl Db {
     }
 
     pub fn delete_item(&self, id: i64) -> Result<()> {
-        self.0.execute("DELETE FROM items WHERE id = ?1", [id]).map_err(db_err)?;
+        self.0
+            .execute("DELETE FROM items WHERE id = ?1", [id])
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -306,7 +321,10 @@ impl Db {
 
     pub fn set_resolve_error(&self, id: i64, err: Option<String>) -> Result<()> {
         self.0
-            .execute("UPDATE items SET resolve_error = ?2 WHERE id = ?1", params![id, err])
+            .execute(
+                "UPDATE items SET resolve_error = ?2 WHERE id = ?1",
+                params![id, err],
+            )
             .map_err(db_err)?;
         Ok(())
     }
@@ -318,7 +336,13 @@ impl Db {
             .query_row(
                 "SELECT item_key, endpoint, iskn_id FROM resolved WHERE item_id = ?1",
                 [item_id],
-                |r| Ok(Resolved { item_key: r.get(0)?, endpoint: r.get(1)?, iskn_id: r.get(2)? }),
+                |r| {
+                    Ok(Resolved {
+                        item_key: r.get(0)?,
+                        endpoint: r.get(1)?,
+                        iskn_id: r.get(2)?,
+                    })
+                },
             )
             .optional()
             .map_err(db_err)
@@ -336,7 +360,9 @@ impl Db {
     }
 
     pub fn clear_resolved(&self, item_id: i64) -> Result<()> {
-        self.0.execute("DELETE FROM resolved WHERE item_id = ?1", [item_id]).map_err(db_err)?;
+        self.0
+            .execute("DELETE FROM resolved WHERE item_id = ?1", [item_id])
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -422,7 +448,9 @@ impl Db {
     }
 
     pub fn count_item_results(&self) -> Result<i64> {
-        self.0.query_row("SELECT COUNT(*) FROM item_results", [], |r| r.get(0)).map_err(db_err)
+        self.0
+            .query_row("SELECT COUNT(*) FROM item_results", [], |r| r.get(0))
+            .map_err(db_err)
     }
 
     /// Newest run first.
@@ -530,7 +558,9 @@ impl Db {
     }
 
     pub fn mark_all_seen(&self) -> Result<()> {
-        self.0.execute("UPDATE item_results SET seen = 1 WHERE seen = 0", []).map_err(db_err)?;
+        self.0
+            .execute("UPDATE item_results SET seen = 1 WHERE seen = 0", [])
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -550,7 +580,8 @@ impl Db {
             db.0.execute(delete_sql, []).map_err(db_err)?;
             let mut st = db.0.prepare(insert_sql).map_err(db_err)?;
             for r in rows {
-                st.execute(rusqlite::params_from_iter(bind(r))).map_err(db_err)?;
+                st.execute(rusqlite::params_from_iter(bind(r)))
+                    .map_err(db_err)?;
             }
             db.0.execute(
                 "INSERT OR REPLACE INTO ciselniky_meta (name, fetched_at) VALUES (?1, ?2)",
@@ -605,7 +636,11 @@ impl Db {
             "DELETE FROM casti_obci",
             "INSERT INTO casti_obci (kod, nazev, kod_obce) VALUES (?1, ?2, ?3)",
             |(k, n, o)| {
-                vec![Value::Integer(*k as i64), Value::Text(n.clone()), Value::Integer(*o as i64)]
+                vec![
+                    Value::Integer(*k as i64),
+                    Value::Text(n.clone()),
+                    Value::Integer(*o as i64),
+                ]
             },
         )
     }
@@ -614,9 +649,11 @@ impl Db {
     pub fn ciselnik_age(&self, name: &str) -> Result<Option<DateTime<Utc>>> {
         let s: Option<String> = self
             .0
-            .query_row("SELECT fetched_at FROM ciselniky_meta WHERE name = ?1", [name], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT fetched_at FROM ciselniky_meta WHERE name = ?1",
+                [name],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(db_err)?;
         parse_opt_ts(s)
@@ -626,7 +663,10 @@ impl Db {
     /// other substring matches, then alphabetical.
     pub fn search_ku(&self, q: &str, limit: u32) -> Result<Vec<KuOption>> {
         let norm = normalize_cz(q.trim());
-        let esc = norm.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let esc = norm
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
         let mut st = self
             .0
             .prepare(
@@ -639,7 +679,11 @@ impl Db {
             .map_err(db_err)?;
         let rows = st
             .query_map(params![format!("%{esc}%"), format!("{esc}%"), limit], |r| {
-                Ok(KuOption { kod: r.get(0)?, nazev: r.get(1)?, obec: r.get(2)? })
+                Ok(KuOption {
+                    kod: r.get(0)?,
+                    nazev: r.get(1)?,
+                    obec: r.get(2)?,
+                })
             })
             .map_err(db_err)?;
         rows.map(|r| r.map_err(db_err)).collect()
@@ -648,9 +692,11 @@ impl Db {
     /// `(nazev, kod_obce)` of a katastrální území.
     pub fn get_ku(&self, kod: u32) -> Result<Option<(String, u32)>> {
         self.0
-            .query_row("SELECT nazev, kod_obce FROM ku WHERE kod = ?1", [kod], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT nazev, kod_obce FROM ku WHERE kod = ?1",
+                [kod],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .optional()
             .map_err(db_err)
     }
@@ -661,7 +707,9 @@ impl Db {
             .0
             .prepare("SELECT kod, nazev FROM casti_obci WHERE kod_obce = ?1 ORDER BY kod")
             .map_err(db_err)?;
-        let rows = st.query_map([kod_obce], |r| Ok((r.get(0)?, r.get(1)?))).map_err(db_err)?;
+        let rows = st
+            .query_map([kod_obce], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(db_err)?;
         rows.map(|r| r.map_err(db_err)).collect()
     }
 
@@ -669,7 +717,9 @@ impl Db {
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         self.0
-            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
             .optional()
             .map_err(db_err)
     }
@@ -690,7 +740,8 @@ mod tests {
     use super::*;
 
     fn setting_count(db: &Db) -> i64 {
-        db.0.query_row("SELECT COUNT(*) FROM settings", [], |r| r.get(0)).unwrap()
+        db.0.query_row("SELECT COUNT(*) FROM settings", [], |r| r.get(0))
+            .unwrap()
     }
 
     #[test]
@@ -726,7 +777,8 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let r = db.transaction(|db| {
             // Deferred FK check makes COMMIT itself fail.
-            db.0.execute_batch("PRAGMA defer_foreign_keys = ON").map_err(db_err)?;
+            db.0.execute_batch("PRAGMA defer_foreign_keys = ON")
+                .map_err(db_err)?;
             db.set_setting("a", "1")?;
             db.insert_item_result(999, 999, "first", None, None)
         });

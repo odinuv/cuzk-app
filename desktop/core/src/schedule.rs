@@ -203,7 +203,9 @@ mod tests {
         for ok in ["00:00", "08:00", "23:59"] {
             assert!(validate_time(ok).is_ok(), "{ok}");
         }
-        for bad in ["", "8:00", "24:00", "12:60", "12-00", "ab:cd", "+1:00", "08:000"] {
+        for bad in [
+            "", "8:00", "24:00", "12:60", "12-00", "ab:cd", "+1:00", "08:000",
+        ] {
             assert!(validate_time(bad).is_err(), "{bad}");
         }
     }
