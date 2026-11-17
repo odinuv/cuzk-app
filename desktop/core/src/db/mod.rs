@@ -455,16 +455,33 @@ impl Db {
 
     /// Newest run first.
     pub fn recent_runs(&self, limit: u32) -> Result<Vec<RunRow>> {
-        let mut st = self
-            .0
-            .prepare(
-                "SELECT id, started_at, finished_at, status, trigger, checked, changed, errors,
-                        deferred, api_calls, api_used_today, api_limit, aktualnost_dat, error
-                 FROM runs ORDER BY id DESC LIMIT ?1",
-            )
-            .map_err(db_err)?;
+        self.query_runs("1 = 1", limit, [])
+    }
+
+    /// The newest run started by `trigger` (`manual` | `scheduled`).
+    pub fn last_run_by_trigger(&self, trigger: &str) -> Result<Option<RunRow>> {
+        self.query_runs("trigger = ?2", 1, [trigger])
+            .map(|mut v| v.pop())
+    }
+
+    /// Runs matching `cond` (SQL over `runs`; `?1` is the limit, extra params from `?2`),
+    /// newest first.
+    fn query_runs<const N: usize>(
+        &self,
+        cond: &str,
+        limit: u32,
+        extra: [&str; N],
+    ) -> Result<Vec<RunRow>> {
+        let sql = format!(
+            "SELECT id, started_at, finished_at, status, trigger, checked, changed, errors,
+                    deferred, api_calls, api_used_today, api_limit, aktualnost_dat, error
+             FROM runs WHERE {cond} ORDER BY id DESC LIMIT ?1"
+        );
+        let mut st = self.0.prepare(&sql).map_err(db_err)?;
+        let mut params: Vec<Value> = vec![Value::Integer(i64::from(limit))];
+        params.extend(extra.iter().map(|s| Value::Text((*s).to_string())));
         let rows = st
-            .query_map([limit], |r| {
+            .query_map(rusqlite::params_from_iter(params), |r| {
                 Ok((
                     RunRow {
                         id: r.get(0)?,

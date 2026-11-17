@@ -28,6 +28,10 @@ const ALLOWED_INTERVALS: [u32; 3] = [7, 14, 30];
 const DEFAULT_TIME: &str = "08:00";
 const SCHEDULE_ENABLED_KEY: &str = "schedule_enabled";
 const SCHEDULE_TIME_KEY: &str = "schedule_time";
+/// When the schedule was last switched on (RFC 3339), for the heartbeat grace period.
+const SCHEDULE_ENABLED_AT_KEY: &str = "schedule_enabled_at";
+/// A daily task that has not run for this long is reported as stale.
+const SCHEDULE_STALE_DAYS: i64 = 2;
 const KU_SEARCH_LIMIT: u32 = 20;
 const RUNS_LIMIT: u32 = 30;
 const MSG_NO_KEY: &str = "Chybí API klíč.";
@@ -185,6 +189,19 @@ pub struct Settings {
     pub interval_days: u32,
     pub schedule_enabled: bool,
     pub schedule_time: String,
+}
+
+/// `get_settings` result: the editable settings plus the schedule heartbeat.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsView {
+    #[serde(flatten)]
+    pub settings: Settings,
+    /// When the newest scheduled (`--check`) run started.
+    pub last_scheduled_run: Option<DateTime<Utc>>,
+    /// The schedule is on but no scheduled run happened in the last two days (or never,
+    /// once it has been on for two days).
+    pub schedule_stale: bool,
 }
 
 // ---- helpers ----
@@ -588,10 +605,13 @@ pub fn due_overview(st: &AppState) -> Result<DueOverview, String> {
 
 // ---- settings ----
 
-pub fn get_settings(st: &AppState) -> Result<Settings, String> {
-    let db = lock_db(st);
+pub fn get_settings(st: &AppState) -> Result<SettingsView, String> {
+    settings_view(st, Utc::now())
+}
+
+fn read_settings(db: &Db) -> Result<Settings, String> {
     Ok(Settings {
-        interval_days: read_interval(&db)?,
+        interval_days: read_interval(db)?,
         schedule_enabled: db
             .get_setting(SCHEDULE_ENABLED_KEY)
             .map_err(msg)?
@@ -601,6 +621,31 @@ pub fn get_settings(st: &AppState) -> Result<Settings, String> {
             .get_setting(SCHEDULE_TIME_KEY)
             .map_err(msg)?
             .unwrap_or_else(|| DEFAULT_TIME.to_string()),
+    })
+}
+
+fn settings_view(st: &AppState, now: DateTime<Utc>) -> Result<SettingsView, String> {
+    let db = lock_db(st);
+    let settings = read_settings(&db)?;
+    let last_scheduled_run = db
+        .last_run_by_trigger(Trigger::Scheduled.as_str())
+        .map_err(msg)?
+        .map(|r| r.started_at);
+    let stale_before = now - chrono::Duration::days(SCHEDULE_STALE_DAYS);
+    let schedule_stale = settings.schedule_enabled
+        && match last_scheduled_run {
+            Some(t) => t < stale_before,
+            // Never ran: only stale once the schedule has been on long enough.
+            None => db
+                .get_setting(SCHEDULE_ENABLED_AT_KEY)
+                .map_err(msg)?
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .is_some_and(|t| t.with_timezone(&Utc) < stale_before),
+        };
+    Ok(SettingsView {
+        settings,
+        last_scheduled_run,
+        schedule_stale,
     })
 }
 
@@ -621,6 +666,15 @@ pub fn save_settings(st: &AppState, s: Settings) -> Result<(), String> {
         st.scheduler.disable().map_err(msg)?;
     }
     let db = lock_db(st);
+    let was_enabled = db
+        .get_setting(SCHEDULE_ENABLED_KEY)
+        .map_err(msg)?
+        .as_deref()
+        == Some("1");
+    if s.schedule_enabled && !was_enabled {
+        db.set_setting(SCHEDULE_ENABLED_AT_KEY, &Utc::now().to_rfc3339())
+            .map_err(msg)?;
+    }
     db.set_setting(INTERVAL_SETTING, &s.interval_days.to_string())
         .map_err(msg)?;
     db.set_setting(
@@ -824,7 +878,7 @@ mod tests {
             schedule_time: "07:15".into(),
         };
         save_settings(&t.st, ok.clone()).unwrap();
-        assert_eq!(get_settings(&t.st).unwrap(), ok);
+        assert_eq!(get_settings(&t.st).unwrap().settings, ok);
         assert_eq!(t.sched.calls(), vec![SchedulerCall::Disable]);
     }
 
@@ -855,5 +909,68 @@ mod tests {
         assert!(s.has_key);
         assert_eq!((s.limit, s.used), (Some(500), Some(10)));
         assert_eq!(t.st.secrets.get().unwrap().as_deref(), Some("good-key"));
+    }
+
+    fn scheduled_run(db: &Db, at: DateTime<Utc>) {
+        let id = db.begin_run("scheduled", at).unwrap();
+        db.finish_run(&strazce_core::db::RunRecord {
+            id,
+            finished_at: at,
+            status: "ok".into(),
+            checked: 0,
+            changed: 0,
+            errors: 0,
+            deferred: 0,
+            api_calls: 0,
+            api_used_today: None,
+            api_limit: None,
+            aktualnost_dat: None,
+            error: None,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn schedule_heartbeat_reports_last_scheduled_run_and_staleness() {
+        let t = setup(false);
+        // Stored timestamps have whole seconds.
+        let now = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
+        // Schedule off: never stale.
+        let v = settings_view(&t.st, now).unwrap();
+        assert_eq!(v.last_scheduled_run, None);
+        assert!(!v.schedule_stale);
+
+        // Enabled just now, no run yet: not stale (grace period).
+        save_settings(
+            &t.st,
+            Settings {
+                interval_days: 14,
+                schedule_enabled: true,
+                schedule_time: "08:00".into(),
+            },
+        )
+        .unwrap();
+        let v = settings_view(&t.st, now).unwrap();
+        assert!(v.settings.schedule_enabled);
+        assert!(!v.schedule_stale);
+        // Enabled more than two days ago and the task never ran: stale.
+        assert!(
+            settings_view(&t.st, now + chrono::Duration::days(3))
+                .unwrap()
+                .schedule_stale
+        );
+
+        // A manual run does not count; a scheduled one does.
+        {
+            let db = lock_db(&t.st);
+            db.begin_run("manual", now).unwrap();
+            scheduled_run(&db, now + chrono::Duration::days(2));
+        }
+        let later = now + chrono::Duration::days(3);
+        let v = settings_view(&t.st, later).unwrap();
+        assert_eq!(v.last_scheduled_run, Some(now + chrono::Duration::days(2)));
+        assert!(!v.schedule_stale);
+        let v = settings_view(&t.st, now + chrono::Duration::days(5)).unwrap();
+        assert!(v.schedule_stale);
     }
 }

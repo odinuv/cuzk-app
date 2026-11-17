@@ -179,6 +179,14 @@ export interface Settings {
   scheduleTime: string;
 }
 
+/** `get_settings` result: the editable settings plus the schedule heartbeat. */
+export interface SettingsView extends Settings {
+  /** Start of the newest scheduled (`--check`) run. */
+  lastScheduledRun: string | null;
+  /** The schedule is on but no scheduled run happened in the last two days. */
+  scheduleStale: boolean;
+}
+
 export interface ItemDetail {
   item: ItemView;
   /** Last stored API snapshot; null before the first successful check. */
@@ -204,5 +212,5 @@ export const markSeen = () => invoke<void>("mark_seen");
 export const itemDetail = (id: number) => invoke<ItemDetail>("item_detail", { id });
 export const dueOverview = () => invoke<DueOverview>("due_overview");
 
-export const getSettings = () => invoke<Settings>("get_settings");
+export const getSettings = () => invoke<SettingsView>("get_settings");
 export const saveSettings = (settings: Settings) => invoke<void>("save_settings", { settings });

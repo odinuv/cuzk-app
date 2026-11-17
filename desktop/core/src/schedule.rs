@@ -1,4 +1,5 @@
-//! Daily Windows Task Scheduler entry that runs `"<exe>" --check`.
+//! Daily Windows Task Scheduler entry that runs `"<exe>" --check`, created from an XML
+//! definition so missed runs catch up and battery power does not block them.
 
 use crate::error::CoreError;
 use std::path::Path;
@@ -34,20 +35,95 @@ pub fn validate_time(time: &str) -> Result<()> {
     }
 }
 
-/// Arguments of `schtasks` for `enable`. The `/TR` value is `"<exe>" --check` with the
-/// path quoted, so paths with spaces work.
-pub fn schtasks_create_args(exe: &Path, time: &str) -> Vec<String> {
+/// Escapes text for XML element content and attribute values.
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Task Scheduler definition of the daily task: runs `"<exe>" --check` every day at `time`
+/// (`HH:MM`, local time) for the logged-on user. A run missed while the PC was off or asleep
+/// starts as soon as possible (`StartWhenAvailable`), and battery power neither prevents nor
+/// stops it (the `/SC DAILY` defaults do both).
+pub fn task_xml(exe: &Path, time: &str) -> String {
+    let exe = xml_escape(&exe.display().to_string());
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Strážce katastru: denní kontrola sledovaných nemovitostí</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2024-01-01T{time}:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>"{exe}"</Command>
+      <Arguments>--check</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"#
+    )
+}
+
+/// File bytes `schtasks /XML` expects: UTF-16 LE with a byte order mark.
+pub fn utf16le_with_bom(s: &str) -> Vec<u8> {
+    let mut out = vec![0xFF, 0xFE];
+    for u in s.encode_utf16() {
+        out.extend_from_slice(&u.to_le_bytes());
+    }
+    out
+}
+
+/// Arguments of `schtasks` for `enable`: create (or replace) the task from an XML file.
+pub fn schtasks_create_args(xml_file: &Path) -> Vec<String> {
     vec![
         "/Create".into(),
-        "/F".into(),
-        "/SC".into(),
-        "DAILY".into(),
+        "/XML".into(),
+        xml_file.display().to_string(),
         "/TN".into(),
         TASK_NAME.into(),
-        "/ST".into(),
-        time.into(),
-        "/TR".into(),
-        format!("\"{}\" --check", exe.display()),
+        "/F".into(),
     ]
 }
 
@@ -92,7 +168,12 @@ fn query_args() -> Vec<String> {
 impl Scheduler for WindowsTaskScheduler {
     fn enable(&self, exe: &Path, time: &str) -> Result<()> {
         validate_time(time)?;
-        let o = schtasks(&schtasks_create_args(exe, time))?;
+        let file = std::env::temp_dir().join(format!("strazce-task-{}.xml", std::process::id()));
+        std::fs::write(&file, utf16le_with_bom(&task_xml(exe, time)))
+            .map_err(|e| CoreError::Db(format!("Definici úlohy nelze zapsat: {e}")))?;
+        let o = schtasks(&schtasks_create_args(&file));
+        let _ = std::fs::remove_file(&file);
+        let o = o?;
         if o.ok {
             Ok(())
         } else {
@@ -178,23 +259,47 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn schtasks_args_quote_exe_with_spaces() {
-        let exe = PathBuf::from(r"C:\Program Files\Strazce\strazce.exe");
-        let args = schtasks_create_args(&exe, "08:00");
+    fn schtasks_args_create_from_xml_file() {
+        let xml = PathBuf::from(r"C:\Users\a b\AppData\Local\Temp\strazce-task.xml");
         assert_eq!(
-            args,
+            schtasks_create_args(&xml),
             vec![
                 "/Create",
-                "/F",
-                "/SC",
-                "DAILY",
+                "/XML",
+                r"C:\Users\a b\AppData\Local\Temp\strazce-task.xml",
                 "/TN",
                 "StrazceKatastru",
-                "/ST",
-                "08:00",
-                "/TR",
-                r#""C:\Program Files\Strazce\strazce.exe" --check"#,
+                "/F",
             ]
+        );
+    }
+
+    #[test]
+    fn task_xml_catches_up_runs_on_battery_and_quotes_exe() {
+        let exe = PathBuf::from(r"C:\Program Files\R&D <x>\strazce.exe");
+        let xml = task_xml(&exe, "07:05");
+        for needle in [
+            "<StartBoundary>2024-01-01T07:05:00</StartBoundary>",
+            "<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>",
+            "<StartWhenAvailable>true</StartWhenAvailable>",
+            "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+            "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
+            "<LogonType>InteractiveToken</LogonType>",
+            "<ExecutionTimeLimit>PT1H</ExecutionTimeLimit>",
+            r#"<Command>"C:\Program Files\R&amp;D &lt;x&gt;\strazce.exe"</Command>"#,
+            "<Arguments>--check</Arguments>",
+        ] {
+            assert!(xml.contains(needle), "missing {needle} in\n{xml}");
+        }
+        assert!(xml.starts_with(r#"<?xml version="1.0" encoding="UTF-16"?>"#));
+        assert!(!xml.contains("R&D"), "unescaped ampersand");
+    }
+
+    #[test]
+    fn utf16_file_bytes_have_bom_and_little_endian() {
+        assert_eq!(
+            utf16le_with_bom("Až"),
+            vec![0xFF, 0xFE, b'A', 0, 0x7E, 0x01]
         );
     }
 

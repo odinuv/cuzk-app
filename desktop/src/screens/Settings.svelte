@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { deleteApiKey, getSettings, saveSettings, type ApiStatus, type Settings } from "../lib/api";
-  import { formatDate } from "../lib/format";
+  import { deleteApiKey, getSettings, saveSettings, type ApiStatus, type SettingsView } from "../lib/api";
+  import { formatDate, formatDateTime } from "../lib/format";
   import KeyForm from "./KeyForm.svelte";
 
   let { status, onstatus }: { status: ApiStatus; onstatus: (s: ApiStatus | null) => void } = $props();
 
-  let settings = $state<Settings | null>(null);
+  let settings = $state<SettingsView | null>(null);
   let loadError = $state<string | null>(null);
   let saveMsg = $state<string | null>(null);
   let saveError = $state<string | null>(null);
@@ -13,20 +13,24 @@
   let confirmDelete = $state(false);
   let keyError = $state<string | null>(null);
 
-  $effect(() => {
+  function load() {
     getSettings().then(
       (s) => (settings = s),
       (err) => (loadError = String(err)),
     );
-  });
+  }
+
+  $effect(load);
 
   async function save() {
     if (!settings) return;
     saveMsg = null;
     saveError = null;
     try {
-      await saveSettings(settings);
-      saveMsg = settings.scheduleEnabled ? "Uloženo, plánovaná kontrola je zapnutá." : "Uloženo.";
+      const { intervalDays, scheduleEnabled, scheduleTime } = settings;
+      await saveSettings({ intervalDays, scheduleEnabled, scheduleTime });
+      saveMsg = scheduleEnabled ? "Uloženo, plánovaná kontrola je zapnutá." : "Uloženo.";
+      load();
     } catch (err) {
       saveError = String(err);
     }
@@ -94,6 +98,18 @@
         <input type="time" bind:value={settings.scheduleTime} />
       </label>
     </div>
+    {#if settings.scheduleEnabled}
+      <p class="small">
+        Plánovaná kontrola naposledy proběhla:
+        <strong>{settings.lastScheduledRun ? formatDateTime(settings.lastScheduledRun) : "zatím nikdy"}</strong>
+      </p>
+      {#if settings.scheduleStale}
+        <p class="error">
+          Plánovaná kontrola neproběhla déle než 2 dny. Zkontrolujte, že je počítač v nastavený čas zapnutý
+          a vy přihlášeni, případně nastavení uložte znovu.
+        </p>
+      {/if}
+    {/if}
     <button class="primary" onclick={save}>Uložit nastavení</button>
     {#if saveMsg}<p class="ok">{saveMsg}</p>{/if}
     {#if saveError}<p class="error">{saveError}</p>{/if}
@@ -103,5 +119,6 @@
 </div>
 
 <style>
+  .small { font-size: 0.9rem; }
   .fields { display: flex; flex-direction: column; gap: 0.8em; margin: 1em 0; max-width: 360px; }
 </style>

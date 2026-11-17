@@ -87,7 +87,7 @@ pub async fn due_overview(state: Shared<'_>) -> Result<DueOverview, String> {
 }
 
 #[tauri::command]
-pub async fn get_settings(state: Shared<'_>) -> Result<Settings, String> {
+pub async fn get_settings(state: Shared<'_>) -> Result<SettingsView, String> {
     blocking(state, commands::get_settings).await
 }
 

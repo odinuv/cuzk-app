@@ -16,7 +16,7 @@ Aplikace potřebuje vlastní klíč k API ČÚZK. Klíč je zdarma a umožňuje 
 Klíč se ukládá do Správce pověření systému Windows (Credential Manager) pod názvem `strazce-katastru`, ne do souboru.
 
 ### Plánovaná kontrola
-V Nastavení lze zapnout denní kontrolu v zadaný čas. Aplikace k tomu vytvoří úlohu `StrazceKatastru` v Plánovači úloh Windows, která spouští `strazce.exe --check` bez okna. Úloha běží jen pod přihlášeným uživatelem (kvůli úložišti klíčů a notifikacím), takže počítač musí být v daný čas zapnutý a vy přihlášeni. Vypnutím plánu se úloha smaže.
+V Nastavení lze zapnout denní kontrolu v zadaný čas. Aplikace k tomu vytvoří úlohu `StrazceKatastru` v Plánovači úloh Windows, která spouští `strazce.exe --check` bez okna. Úloha běží jen pod přihlášeným uživatelem (kvůli úložišti klíčů a notifikacím). Když byl počítač v daný čas vypnutý nebo uspaný, kontrola proběhne hned, jakmile to jde (po zapnutí a přihlášení); běží i na baterii. V Nastavení je vidět, kdy plánovaná kontrola naposledy proběhla, a pokud neproběhla déle než 2 dny, aplikace na to upozorní. Vypnutím plánu se úloha smaže.
 
 ### Kde jsou data
 - Databáze: `%APPDATA%\cz.strazce-katastru.app\strazce.db`
