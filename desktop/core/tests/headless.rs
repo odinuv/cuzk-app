@@ -4,6 +4,7 @@ use std::sync::Arc;
 use strazce_core::api::MockTransport;
 use strazce_core::db::{Db, NewItem};
 use strazce_core::headless::{run_headless, summary_text, RecordingNotifier};
+use strazce_core::lock::RunLock;
 use strazce_core::model::*;
 use strazce_core::run::{RunStatus, RunSummary};
 use strazce_core::secrets::{MemoryStore, SecretStore};
@@ -82,6 +83,10 @@ fn summary() -> RunSummary {
 }
 
 fn add_parcela(db: &Db) -> i64 {
+    add_parcela_n(db, 182)
+}
+
+fn add_parcela_n(db: &Db, k: u32) -> i64 {
     db.insert_item(&NewItem {
         popis: "t".into(),
         enabled: true,
@@ -89,7 +94,7 @@ fn add_parcela(db: &Db) -> i64 {
             ku: 618853,
             parcela: ParcelaRef {
                 druh: DruhCislovani::Stavebni,
-                kmenove: 182,
+                kmenove: k,
                 poddeleni: None,
             },
         },
@@ -140,13 +145,91 @@ fn headless_no_key_exit_2_and_notifies() {
 
 #[test]
 fn headless_invalid_key_exit_2() {
+    for status in [401u16, 403] {
+        let e = Env::new();
+        let db = e.db();
+        let id = add_parcela(&db);
+        db.set_item_success(id, r#"{"id":101}"#, now() - Duration::days(30))
+            .unwrap();
+        let snap = |db: &Db| {
+            db.list_items()
+                .unwrap()
+                .into_iter()
+                .map(|r| (r.item.id, r.last_data, r.last_success_at, r.resolve_error))
+                .collect::<Vec<_>>()
+        };
+        let before = snap(&db);
+        e.mock.push("/AplikacniSluzby/StavUctu", status, "{}");
+        assert_eq!(e.run(&keyed()), 2, "{status}");
+        let calls = e.notifier.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, KEY_MSG);
+        // Only StavUctu was requested and the item is untouched.
+        let urls = e.mock.requested_urls();
+        assert_eq!(urls.len(), 1, "{urls:?}");
+        assert!(urls[0].contains("/AplikacniSluzby/StavUctu"));
+        assert_eq!(snap(&db), before);
+    }
+}
+
+#[test]
+fn headless_already_running_exit_3_silent() {
+    let e = Env::new();
+    e.db();
+    let _held = RunLock::acquire(&e.lock_path()).unwrap();
+    assert_eq!(e.run(&keyed()), 3);
+    assert!(e.notifier.calls().is_empty());
+}
+
+#[test]
+fn headless_other_error_exit_1_with_notification() {
     let e = Env::new();
     add_parcela(&e.db());
-    e.mock.push("/AplikacniSluzby/StavUctu", 401, "{}");
-    assert_eq!(e.run(&keyed()), 2);
+    e.mock.push("/AplikacniSluzby/StavUctu", 400, "bad");
+    assert_eq!(e.run(&keyed()), 1);
     let calls = e.notifier.calls();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].1, KEY_MSG);
+    assert_eq!(calls[0].0, "Katastr: chyba kontroly");
+    assert!(calls[0].1.contains("HTTP chyba 400"), "{}", calls[0].1);
+    assert!(!calls[0].1.contains("fake-key"));
+}
+
+#[test]
+fn headless_deferred_only_notifies_exit_0() {
+    let e = Env::new();
+    add_parcela(&e.db());
+    // budget = 500 - 495 - 1 - 5 < 0: nothing fits, the item is deferred.
+    e.mock.push(
+        "/AplikacniSluzby/StavUctu",
+        200,
+        r#"{"idSluzby":1,"aktualniObdobi":"2026-11-17","provedenoVolani":495,"limitVolani":500,"expiraceApiKey":null}"#,
+    );
+    assert_eq!(e.run(&keyed()), 0);
+    let calls = e.notifier.calls();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].1.contains("zbývá 1 položka na další dny"), "{}", calls[0].1);
+}
+
+#[test]
+fn headless_partial_with_errors_notifies_exit_0() {
+    let e = Env::new();
+    {
+        let db = e.db();
+        add_parcela_n(&db, 1);
+        add_parcela_n(&db, 2);
+    }
+    // budget 5 minus the StavUctu call = 4: the first item errors after one call, the second no longer fits.
+    e.mock.push(
+        "/AplikacniSluzby/StavUctu",
+        200,
+        r#"{"idSluzby":1,"aktualniObdobi":"2026-11-17","provedenoVolani":489,"limitVolani":500,"expiraceApiKey":null}"#,
+    );
+    e.mock.push("/Parcely/Vyhledani", 200, r#"{"data":[]}"#);
+    assert_eq!(e.run(&keyed()), 0);
+    let calls = e.notifier.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(calls[0].1.contains("chyb: 1"), "{}", calls[0].1);
+    assert!(calls[0].1.contains("zbývá 1 položka"), "{}", calls[0].1);
 }
 
 #[test]

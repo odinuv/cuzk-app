@@ -108,6 +108,15 @@ pub fn summary_text(s: &RunSummary) -> (String, String) {
     (title, body)
 }
 
+/// Error text safe for a notification. API response bodies are left out; every other
+/// `CoreError` message is fixed text or a local I/O / network description (no key).
+fn describe(e: &CoreError) -> String {
+    match e {
+        CoreError::Http { status, .. } => format!("HTTP chyba {status}"),
+        other => other.to_string(),
+    }
+}
+
 /// Runs a scheduled check and returns the process exit code: 0 ok/partial, 1 failure,
 /// 2 missing or invalid API key, 3 another run is in progress.
 pub fn run_headless(
@@ -144,7 +153,7 @@ pub fn run_headless(
     match run_check(&client, &mut db, lock_path, Trigger::Scheduled, now) {
         Err(CoreError::InvalidApiKey) => no_key(),
         Err(CoreError::AlreadyRunning) => 3,
-        Err(_) => fail("Kontrolu se nepodařilo dokončit."),
+        Err(e) => fail(&format!("Kontrolu se nepodařilo dokončit: {}", describe(&e))),
         Ok(s) => {
             let silent = s.checked == 0 && s.errors == 0 && s.deferred == 0;
             if !silent || s.status == RunStatus::Failed {
