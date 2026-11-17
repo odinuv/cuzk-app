@@ -125,6 +125,7 @@ pub struct FindingRow {
     pub describe: String,
     pub status: String,
     pub changes_json: Option<String>,
+    pub error: Option<String>,
     pub run_finished_at: Option<DateTime<Utc>>,
 }
 
@@ -471,34 +472,45 @@ impl Db {
 
     /// Unseen `changed` results, newest run first.
     pub fn unseen_findings(&self) -> Result<Vec<FindingRow>> {
-        let mut st = self
-            .0
-            .prepare(
-                "SELECT r.id, r.run_id, r.item_id, i.popis, i.ident_json, r.status,
-                        r.changes_json, u.finished_at
-                 FROM item_results r
-                 JOIN items i ON i.id = r.item_id
-                 JOIN runs u ON u.id = r.run_id
-                 WHERE r.seen = 0 AND r.status = 'changed'
-                 ORDER BY r.run_id DESC, r.id ASC",
-            )
-            .map_err(db_err)?;
-        let rows = st
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, Option<String>>(6)?,
-                    r.get::<_, Option<String>>(7)?,
-                ))
-            })
-            .map_err(db_err)?;
+        self.findings_where("r.seen = 0 AND r.status = 'changed'", None)
+    }
+
+    /// Every per-item result of one run (all statuses), in item order.
+    pub fn run_findings(&self, run_id: i64) -> Result<Vec<FindingRow>> {
+        self.findings_where("r.run_id = ?1", Some(run_id))
+    }
+
+    fn findings_where(&self, cond: &str, param: Option<i64>) -> Result<Vec<FindingRow>> {
+        let sql = format!(
+            "SELECT r.id, r.run_id, r.item_id, i.popis, i.ident_json, r.status,
+                    r.changes_json, r.error, u.finished_at
+             FROM item_results r
+             JOIN items i ON i.id = r.item_id
+             JOIN runs u ON u.id = r.run_id
+             WHERE {cond}
+             ORDER BY r.run_id DESC, r.id ASC"
+        );
+        let mut st = self.0.prepare(&sql).map_err(db_err)?;
+        let map = |r: &rusqlite::Row| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
+                r.get::<_, Option<String>>(8)?,
+            ))
+        };
+        let rows = match param {
+            Some(p) => st.query_map([p], map),
+            None => st.query_map([], map),
+        }
+        .map_err(db_err)?;
         rows.map(|r| {
-            let (result_id, run_id, item_id, popis, ident_json, status, changes_json, fin) =
+            let (result_id, run_id, item_id, popis, ident_json, status, changes_json, error, fin) =
                 r.map_err(db_err)?;
             let ident: ItemIdent =
                 serde_json::from_str(&ident_json).map_err(|e| CoreError::Db(e.to_string()))?;
@@ -510,6 +522,7 @@ impl Db {
                 describe: describe(&ident),
                 status,
                 changes_json,
+                error,
                 run_finished_at: parse_opt_ts(fin)?,
             })
         })

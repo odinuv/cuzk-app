@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use strazce_core::api::{ApiClient, RizeniDef, StavUctu, Transport};
-use strazce_core::db::{Db, ItemRow, KuOption, NewItem, RunRow};
+use strazce_core::db::{Db, FindingRow, ItemRow, KuOption, NewItem, RunRow};
 use strazce_core::diff::FieldChange;
 use strazce_core::error::CoreError;
 use strazce_core::model::{describe, item_key, validate, Item, ItemIdent};
@@ -133,6 +133,8 @@ pub struct FindingView {
     pub describe: String,
     pub status: ItemStatus,
     pub changes: Option<ChangesView>,
+    /// Czech error text of a failed item (core errors are fixed text, never the key).
+    pub error: Option<String>,
     pub run_finished_at: Option<DateTime<Utc>>,
 }
 
@@ -161,6 +163,8 @@ pub struct RunView {
 #[serde(rename_all = "camelCase")]
 pub struct ResultsView {
     pub findings: Vec<FindingView>,
+    /// Per-item results of the last run (all statuses).
+    pub last_run_items: Vec<FindingView>,
     pub last_run: Option<RunView>,
     pub runs: Vec<RunView>,
 }
@@ -444,29 +448,35 @@ pub fn run_check(st: &AppState) -> Result<RunSummaryView, String> {
     })
 }
 
+fn finding_view(f: FindingRow) -> FindingView {
+    FindingView {
+        result_id: f.result_id,
+        run_id: f.run_id,
+        item_id: f.item_id,
+        popis: f.popis,
+        describe: f.describe,
+        status: status_from_db(&f.status),
+        changes: f
+            .changes_json
+            .and_then(|j| serde_json::from_str::<Changes>(&j).ok())
+            .map(changes_view),
+        error: f.error,
+        run_finished_at: f.run_finished_at,
+    }
+}
+
 pub fn results(st: &AppState) -> Result<ResultsView, String> {
     let db = lock_db(st);
-    let findings = db
-        .unseen_findings()
-        .map_err(msg)?
-        .into_iter()
-        .map(|f| FindingView {
-            result_id: f.result_id,
-            run_id: f.run_id,
-            item_id: f.item_id,
-            popis: f.popis,
-            describe: f.describe,
-            status: status_from_db(&f.status),
-            changes: f
-                .changes_json
-                .and_then(|j| serde_json::from_str::<Changes>(&j).ok())
-                .map(changes_view),
-            run_finished_at: f.run_finished_at,
-        })
-        .collect();
+    let findings: Vec<FindingView> =
+        db.unseen_findings().map_err(msg)?.into_iter().map(finding_view).collect();
     let runs: Vec<RunView> =
         db.recent_runs(RUNS_LIMIT).map_err(msg)?.into_iter().map(run_view).collect();
-    Ok(ResultsView { findings, last_run: runs.first().cloned(), runs })
+    let last_run = runs.first().cloned();
+    let last_run_items = match &last_run {
+        Some(r) => db.run_findings(r.id).map_err(msg)?.into_iter().map(finding_view).collect(),
+        None => Vec::new(),
+    };
+    Ok(ResultsView { findings, last_run, last_run_items, runs })
 }
 
 pub fn mark_seen(st: &AppState) -> Result<(), String> {
@@ -652,6 +662,24 @@ mod tests {
         assert_eq!(s.checked, 0);
         drop(guard);
         assert_eq!(results(&t.st).unwrap().runs.len(), 1);
+    }
+
+    #[test]
+    fn results_carry_error_text_of_last_run_items() {
+        let t = setup(false);
+        let v = save_item(&t.st, parcela_input()).unwrap();
+        {
+            let db = lock_db(&t.st);
+            let run = db.begin_run("manual", Utc::now()).unwrap();
+            db.insert_item_result(run, v.id, "error", None, Some("Parcela nenalezena.")).unwrap();
+            db.insert_item_result(run, v.id, "unchanged", None, None).unwrap();
+        }
+        let r = results(&t.st).unwrap();
+        assert_eq!(r.last_run_items.len(), 2);
+        assert_eq!(r.last_run_items[0].status, ItemStatus::Error);
+        assert_eq!(r.last_run_items[0].error.as_deref(), Some("Parcela nenalezena."));
+        assert_eq!(r.last_run_items[1].error, None);
+        assert!(r.findings.is_empty());
     }
 
     #[test]
